@@ -370,6 +370,7 @@ async function importScheduleFile(file) {
 }
 
 function parseAllMessages() {
+    // 날짜만 정규식으로 추출 (자동 동기화용)
     const c=getCtx();
     const chat=c.chat;
     if(!chat?.length)return{dateUpdated:false,added:0};
@@ -377,36 +378,89 @@ function parseAllMessages() {
     if(!aiMsgs.length)return{dateUpdated:false,added:0};
     const s=S();
     let dateUpdated=false;
-    // 날짜는 마지막 AI 메시지 기준
     const lastAI=aiMsgs[aiMsgs.length-1];
     const dt=parseInfoBlock(lastAI.mes||'');
-    if(dt){s.currentDT=dt;dateUpdated=true;save();}
-    // 스케쥴은 전체 스캔 — applyParsedSchedules로 dayEnd 처리
-    let allFound=[];
-    for(const msg of aiMsgs){
-        const found=parseSchedulesFromText(msg.mes||'',s.currentDT);
-        allFound=allFound.concat(found);
-    }
-    const added=applyParsedSchedules(allFound);
-    if(dateUpdated)injectContext();
-    return{dateUpdated,added};
+    if(dt){s.currentDT=dt;dateUpdated=true;save();injectContext();}
+    return{dateUpdated,added:0};
 }
 
 function parseLastOnly() {
+    // 자동 동기화: 날짜만 추출
     const c=getCtx();
     const chat=c.chat;
     if(!chat?.length)return{dateUpdated:false,added:0};
     const lastAI=[...chat].reverse().find(m=>!m.is_user);
     if(!lastAI)return{dateUpdated:false,added:0};
-    const text=lastAI.mes||'';
     const s=S();
-    const dt=parseInfoBlock(text);
+    const dt=parseInfoBlock(lastAI.mes||'');
     let dateUpdated=false;
-    if(dt){s.currentDT=dt;dateUpdated=true;save();}
-    const found=parseSchedulesFromText(text,s.currentDT);
-    const added=applyParsedSchedules(found);
-    if(dateUpdated)injectContext();
-    return{dateUpdated,added};
+    if(dt){s.currentDT=dt;dateUpdated=true;save();injectContext();}
+    return{dateUpdated,added:0};
+}
+
+// ─── AI 스케쥴 파싱 (연결 프로필 사용) ──────────────────────
+async function aiParseSchedules() {
+    const s=S(), c=getCtx();
+    const profileId=s.syncProfileId;
+    if(!profileId){
+        return{error:'연결 프로필을 먼저 설정해주세요 (설정 탭)'};
+    }
+
+    const chat=c.chat||[];
+    const aiMsgs=chat.filter(m=>!m.is_user);
+    if(!aiMsgs.length)return{error:'채팅 내용이 없습니다'};
+
+    // 최근 50개 메시지로 제한
+    const recentMsgs=aiMsgs.slice(-50);
+    const chatText=recentMsgs.map(m=>m.mes||'').join('\n\n---\n\n');
+
+    const curDT=s.currentDT;
+    const curDateStr=curDT?`${curDT.year??''}년 ${curDT.month}월 ${curDT.day}일`:null;
+
+    const systemPrompt=`You are a schedule extraction assistant for a roleplay chat.
+${curDateStr?`Current RP date: ${curDateStr}`:''}
+
+Your task:
+1. Read the chat and extract ONLY real scheduled future events/appointments mentioned by characters
+2. Ignore: past narration, general dialogue, character actions, weather descriptions, emotional states
+3. Include: specific dates mentioned, appointments, meetings, events characters plan to attend
+4. Calculate relative dates (tomorrow, next Tuesday, etc.) based on current RP date
+5. For date ranges (May 2-4), include dayEnd field
+
+Return ONLY a valid JSON array, no explanation, no markdown:
+[{"year":2027,"month":5,"day":3,"dayEnd":5,"title":"Event name","note":"additional detail or null"}]
+
+Rules:
+- title: concise event name only (e.g. "Park visit", "Doctor appointment")  
+- note: location, context, or extra detail (e.g. "festival", "with Olivia") or null
+- If no schedules found, return []`;
+
+    try {
+        const messages=[{role:'user',content:chatText}];
+        const response=await c.ConnectionManagerRequestService.sendRequest(
+            profileId, messages, 2000,
+            {stream:false, extractData:true, includePreset:false, includeInstruct:false, systemPrompt}
+        );
+
+        let raw='';
+        if(typeof response==='string') raw=response;
+        else if(response?.choices?.[0]?.message?.content) raw=response.choices[0].message.content;
+        else if(response?.content?.[0]?.text) raw=response.content[0].text;
+        else if(response?.content) raw=String(response.content);
+
+        const clean=raw.replace(/```json|```/g,'').trim();
+        const jsonMatch=clean.match(/\[[\s\S]*\]/);
+        if(!jsonMatch)return{error:'AI 응답을 파싱할 수 없습니다', raw:clean.slice(0,200)};
+
+        const parsed=JSON.parse(jsonMatch[0]);
+        if(!Array.isArray(parsed))return{error:'잘못된 응답 형식'};
+
+        const added=applyParsedSchedules(parsed);
+        return{added, parsed};
+    } catch(err) {
+        console.error('[RPPlanner] AI parse error:', err);
+        return{error:err.message||'AI 호출 실패'};
+    }
 }
 
 // ─── 백업 ────────────────────────────────────────────────────
@@ -818,6 +872,15 @@ function bindScheduleEvents() {
         });
     });
 
+    // ⚡ Sync 버튼 (스케쥴 탭)
+    document.getElementById('sch-sync-btn')?.addEventListener('click',async e=>{
+        e.stopPropagation();
+        const btn=document.getElementById('sch-sync-btn');
+        if(btn){btn.disabled=true;btn.textContent='🔄...';}
+        await doSync(true);
+        if(btn){btn.disabled=false;btn.textContent='⚡ Sync';}
+    });
+
     // 파일 불러오기
     document.getElementById('sch-file-input')?.addEventListener('change',async e=>{
         e.stopPropagation();
@@ -1139,15 +1202,27 @@ function bindSettingsEvents() {
     document.getElementById('sync-auto-btn')?.addEventListener('click',e=>{
         e.stopPropagation();s.syncMode='auto';save();switchTab('settings');toast('자동 동기화 켜짐');
     });
-    document.getElementById('sync-manual-btn')?.addEventListener('click',e=>{
+    document.getElementById('sync-manual-btn')?.addEventListener('click',async e=>{
         e.stopPropagation();
-        const{dateUpdated,added}=parseAllMessages();
-        let msg='새로운 정보 없음';
-        if(dateUpdated&&added)msg=`날짜 갱신 + ${added}개 일정 감지`;
-        else if(dateUpdated)msg='날짜/시간 갱신됨';
-        else if(added)msg=`${added}개 일정 감지됨`;
-        if(window.toastr)window.toastr.info(msg,'RP Planner');
-        else alert(msg);
+        const btn=document.getElementById('sync-manual-btn');
+        if(btn){btn.disabled=true;btn.textContent='🔄 분석 중...';}
+        const{dateUpdated}=parseLastOnly();
+        const result=await aiParseSchedules();
+        if(btn){btn.disabled=false;btn.textContent='🔵 지금 동기화';}
+        let msg='';
+        if(result.error){
+            msg=`오류: ${result.error}`;
+            if(window.toastr)window.toastr.error(msg,'RP Planner');
+            else alert(msg);
+        } else {
+            const added=result.added||0;
+            if(dateUpdated&&added)     msg=`날짜 갱신 + ${added}개 일정 감지`;
+            else if(dateUpdated)       msg='날짜/시간 갱신됨';
+            else if(added)             msg=`${added}개 일정 감지됨`;
+            else                       msg='새로운 일정 없음';
+            if(window.toastr)window.toastr.success(msg,'RP Planner');
+            else alert(msg);
+        }
         switchTab('settings');
     });
     document.getElementById('sync-off-btn')?.addEventListener('click',e=>{
@@ -1270,18 +1345,34 @@ function toast(msg,err=false) {
 }
 
 // ─── 동기화 실행 ─────────────────────────────────────────────
-function doSync(showAlert=false) {
-    const{dateUpdated,added}=parseAllMessages();
-    let msg='Nothing new found';
-    if(dateUpdated&&added)msg=`Date updated + ${added} schedules found`;
-    else if(dateUpdated)msg='Date updated';
-    else if(added)msg=`${added} schedules found`;
-    if(showAlert){
-        if(window.toastr)window.toastr.info(msg,'RP Planner');
-        else alert(msg);
-    } else {
-        toast(msg);
+async function doSync(showAlert=false) {
+    // 날짜 먼저 정규식으로
+    const{dateUpdated}=parseLastOnly();
+
+    // 스케쥴은 AI로
+    const result=await aiParseSchedules();
+
+    let msg='';
+    if(result.error){
+        msg=`오류: ${result.error}`;
+        if(showAlert){
+            if(window.toastr)window.toastr.error(msg,'RP Planner');
+            else alert(msg);
+        } else toast(msg,true);
+        return;
     }
+
+    const added=result.added||0;
+    if(dateUpdated&&added)     msg=`날짜 갱신 + ${added}개 일정 감지`;
+    else if(dateUpdated)       msg='날짜/시간 갱신됨';
+    else if(added)             msg=`${added}개 일정 감지됨`;
+    else                       msg='새로운 일정 없음';
+
+    if(showAlert){
+        if(window.toastr)window.toastr.success(msg,'RP Planner');
+        else alert(msg);
+    } else toast(msg);
+
     if(panelOpen){
         if(activeTab==='calendar')switchTab('calendar');
         else if(activeTab==='schedule')switchTab('schedule');
