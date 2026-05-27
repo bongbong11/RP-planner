@@ -6,7 +6,8 @@
 //   - Extensions 설정탭: 연결프로필 선택, 자동/수동 동기화, 주입 토글
 //   - 연결프로필: extension_settings.connectionManager.profiles 에서 읽어옴
 
-import { saveSettingsDebounced, getContext, eventSource, event_types } from '../../../../script.js';
+import { saveSettingsDebounced, eventSource, event_types } from '../../../../script.js';
+const getContext = () => SillyTavern.getContext();
 import { extension_settings, setExtensionPrompt } from '../../../extensions.js';
 const extension_prompt_types = { IN_CHAT: 1, BEFORE_PROMPT: 0, IN_PROMPT: 2 };
 
