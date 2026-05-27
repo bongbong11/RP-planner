@@ -427,10 +427,11 @@ Return ONLY JSON array: [{"year":2027,"month":5,"day":3,"dayEnd":5,"title":"Even
 - Return [] if nothing found`;
 
     try {
-        const messages=[{role:'user',content:filteredText}];
+        const userContent=`${systemPrompt}\n\n===CHAT===\n${filteredText}`;
+        const messages=[{role:'user',content:userContent}];
         const response=await c.ConnectionManagerRequestService.sendRequest(
             profileId, messages, 1000,
-            {stream:false, extractData:true, includePreset:true, includeInstruct:false, systemPrompt}
+            {stream:false, extractData:true, includePreset:false, includeInstruct:false}
         );
 
         let raw='';
@@ -1388,8 +1389,8 @@ function openPanel() {
     document.getElementById('rpp-close')?.addEventListener('click',e=>{e.stopPropagation();closePanel();});
 
     // ⚡ 수동 동기화
-    document.getElementById('rpp-sync-btn')?.addEventListener('click',e=>{
-        e.stopPropagation();doSync(true);
+    document.getElementById('rpp-sync-btn')?.addEventListener('click',async e=>{
+        e.stopPropagation();await doSync(true);
     });
 
     // 📤 주입 토글
