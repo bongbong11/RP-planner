@@ -675,3 +675,33 @@
 
 /* Extensions 설정 패널 */
 .rpp-ext-block { margin-bottom: 8px; }
+
+/* 수동 날짜 입력 */
+.manual-dt-form {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #ede5ff;
+}
+.manual-dt-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.manual-dt-row:last-child { margin-bottom: 0; }
+
+/* 전체 초기화 섹션 */
+.rpp-reset-section {
+  border-color: #f0c8c8 !important;
+  background: #fff8f8 !important;
+}
+.reset-all-btn {
+  background: #ffd8d8 !important;
+  border-color: #e07070 !important;
+  color: #a03030 !important;
+  font-weight: 600 !important;
+}
+.reset-all-btn:hover {
+  background: #ffb8b8 !important;
+}
