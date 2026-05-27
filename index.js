@@ -10,10 +10,15 @@ let ctx = null;
 function getCtx() { if(!ctx) ctx=SillyTavern.getContext(); return ctx; }
 
 // ─── 캐릭터별 데이터 키 ──────────────────────────────────────
-function charKey() {
+function getCurrentCharName() {
     const c=getCtx();
-    const id=c.characterId??'global';
-    return `char_${id}`;
+    const aiMsg=[...( c.chat||[])].reverse().find(m=>!m.is_user);
+    return aiMsg?.name||'global';
+}
+
+function charKey() {
+    const name=getCurrentCharName();
+    return `char_${name.replace(/\s+/g,'_')}`;
 }
 
 const CHAR_DEFAULTS = {
