@@ -729,12 +729,6 @@ function openSchEdit(id) {
 // ══════════════════════════════════════════════════════════════
 // TAB 3: CHARACTER
 // ══════════════════════════════════════════════════════════════
-function getCurrentCharName() {
-    const c=getCtx();
-    const char=c.characters?.[c.characterId];
-    return char?.name||'Current Character';
-}
-
 function renderCharacter() {
     const d=CD();
     const charName=getCurrentCharName();
