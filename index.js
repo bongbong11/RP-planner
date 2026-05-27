@@ -999,7 +999,8 @@ function bindSettingsEvents() {
         e.stopPropagation();
         const s=S();s.darkMode=!s.darkMode;save();
         applyTheme();switchTab('settings');
-    });e.stopPropagation();s.maxUpcoming=parseInt(e.target.value)||20;save();injectContext();});
+    });
+    document.getElementById('rpp-max-upcoming')?.addEventListener('change',e=>{e.stopPropagation();s.maxUpcoming=parseInt(e.target.value)||20;save();injectContext();});
     document.getElementById('rpp-max-past')?.addEventListener('change',e=>{e.stopPropagation();s.maxPast=parseInt(e.target.value)||10;save();injectContext();});
     document.getElementById('rpp-es-profile')?.addEventListener('change',e=>{e.stopPropagation();s.syncProfileId=e.target.value||null;save();});
     document.getElementById('rpp-inject-toggle-settings')?.addEventListener('click',e=>{e.stopPropagation();s.injectEnabled=!s.injectEnabled;save();injectContext();updateHeaderBtns();switchTab('settings');});
