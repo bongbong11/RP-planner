@@ -253,7 +253,7 @@ function parseAllMessages() {
     let dateUpdated=false;
     const lastAI=aiMsgs[aiMsgs.length-1];
     const dt=parseInfoBlock(lastAI.mes||'');
-    if(dt){s.currentDT=dt;dateUpdated=true;save();injectContext();}
+    if(dt){s.currentDT=dt;dateUpdated=true;calYear=dt.year??calYear;calMonth=dt.month??calMonth;save();injectContext();}
     return{dateUpdated,added:0};
 }
 
@@ -266,7 +266,7 @@ function parseLastOnly() {
     const s=S();
     const dt=parseInfoBlock(lastAI.mes||'');
     let dateUpdated=false;
-    if(dt){s.currentDT=dt;dateUpdated=true;save();injectContext();}
+    if(dt){s.currentDT=dt;dateUpdated=true;calYear=dt.year??calYear;calMonth=dt.month??calMonth;save();injectContext();}
     return{dateUpdated,added:0};
 }
 
@@ -555,11 +555,18 @@ function renderCalendar() {
     }
     const rem=(7-((firstDay+daysInMonth)%7))%7;
     for(let i=1;i<=rem;i++) cells+=`<div class="cal-cell cal-other"><span class="cal-num">${i}</span></div>`;
+    const yearOpts=[...Array(20)].map((_,i)=>{const y=(cur?.year??new Date().getFullYear())-5+i;return `<option value="${y}" ${y===year?'selected':''}>${y}</option>`;}).join('');
+    const monthOpts=[...Array(12)].map((_,i)=>`<option value="${i+1}" ${i+1===month?'selected':''}>${String(i+1).padStart(2,'0')}</option>`).join('');
+
     return `<div class="rpp-cal-wrap">
   ${dtDisplay}
   <div class="cal-nav">
     <button class="rpp-btn rpp-btn-xs" id="cal-prev">‹</button>
-    <span class="cal-month-label">${year} / ${String(month).padStart(2,'0')}</span>
+    <div class="cal-nav-selects">
+      <select id="cal-year-sel" class="cal-sel">${yearOpts}</select>
+      <span class="cal-nav-sep">/</span>
+      <select id="cal-month-sel" class="cal-sel">${monthOpts}</select>
+    </div>
     <button class="rpp-btn rpp-btn-xs" id="cal-next">›</button>
   </div>
   <div class="cal-grid">
@@ -573,6 +580,8 @@ function renderCalendar() {
 function bindCalendarEvents() {
     document.getElementById('cal-prev')?.addEventListener('click',e=>{e.stopPropagation();calMonth--;if(calMonth<1){calMonth=12;calYear--;}switchTab('calendar');});
     document.getElementById('cal-next')?.addEventListener('click',e=>{e.stopPropagation();calMonth++;if(calMonth>12){calMonth=1;calYear++;}switchTab('calendar');});
+    document.getElementById('cal-year-sel')?.addEventListener('change',e=>{e.stopPropagation();calYear=+e.target.value;switchTab('calendar');});
+    document.getElementById('cal-month-sel')?.addEventListener('change',e=>{e.stopPropagation();calMonth=+e.target.value;switchTab('calendar');});
     document.querySelectorAll('.cal-cell[data-day]').forEach(cell=>{
         cell.addEventListener('click',e=>{
             e.stopPropagation();
@@ -973,6 +982,7 @@ function bindSettingsEvents() {
         if(!month||!day){toast('월/일은 필수입니다',true);return;}
         const prev=s.currentDT;
         s.currentDT={year,month,day,hour:prev?.hour??null,minute:prev?.minute??null,season:prev?.season??null};
+        calYear=year??calYear;calMonth=month;
         sortAndAutoCheck();save();injectContext();switchTab('settings');toast('날짜 설정 완료');
     });
     document.getElementById('rpp-max-upcoming')?.addEventListener('change',e=>{e.stopPropagation();s.maxUpcoming=parseInt(e.target.value)||20;save();injectContext();});
@@ -1082,7 +1092,11 @@ function openPanel() {
         toast(s.injectEnabled?'RP Injection ON':'RP Injection OFF');
     });
 
-    panelOpen=true;switchTab('calendar');
+    panelOpen=true;
+    // 현재 RP 날짜로 달력 초기화
+    const cur=S().currentDT;
+    if(cur){calYear=cur.year??new Date().getFullYear();calMonth=cur.month;}
+    switchTab('calendar');
 
     setTimeout(()=>{
         _outsideH=e=>{
