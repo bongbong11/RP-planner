@@ -1,12 +1,3 @@
-// RP Planner — SillyTavern Extension v3
-// 변경사항:
-//   - 동기화(파싱) / 주입(롤플반영) 완전 분리
-//   - 번개버튼 → 수동 동기화 버튼
-//   - Past Events / Upcoming Schedule 분리 주입
-//   - Extensions 설정탭: 연결프로필 선택, 자동/수동 동기화, 주입 토글
-//   - 연결프로필: extension_settings.connectionManager.profiles 에서 읽어옴
-
-
 // RP Planner v5 — SillyTavern Extension
 
 import { event_types } from '../../../events.js';
@@ -58,6 +49,16 @@ function CD() {
     const d=s.charData[k];
     if(!d.characters)  d.characters=[];
     if(!d.loreEntries) d.loreEntries=[];
+    // 현재 캐릭터 카드 자동 생성
+    if(d.characters.length===0){
+        const c=getCtx();
+        const char=c.characters?.[c.characterId];
+        const name=char?.name||null;
+        if(name){
+            d.characters.push({id:uid(),name,fields:[{key:'',val:''}]});
+            save();
+        }
+    }
     return d;
 }
 
@@ -121,7 +122,7 @@ function parseSchedulesFromText(text,cur) {
     }
     // 영어 월
     const months={january:1,february:2,march:3,april:4,may:5,june:6,july:7,august:8,september:9,october:10,november:11,december:12,jan:1,feb:2,mar:3,apr:4,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
-    const enRe=/\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\s+(\d{1,2})(?:st|nd|rd|th)?[:\-—\s]+([^\n.]{3,50})/gi;
+    const enRe=/(?:\*{0,2}~?)\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\.?\s+(\d{1,2})(?:[–\-]\d{1,2})?(?:st|nd|rd|th)?(?:\s*\(approx[^)]*\))?(?:\*{0,2})?\s*[:\-—]+\s*(?:\*{0,2})([^\n*✅⚠️]{2,80})/gi;
     while((m=enRe.exec(text))!==null){
         const mo=months[m[1].toLowerCase()],d=+m[2];
         const title=m[3].trim().replace(/[.,\s]+$/,'').replace(/^\*+\s*[—\-]\s*/,'');
@@ -336,8 +337,8 @@ function getPanelHTML() {
   <div id="rpp-tabs">
     <button class="rpp-tab" data-tab="calendar" title="Calendar">📅</button>
     <button class="rpp-tab" data-tab="schedule" title="Schedule">🗓</button>
-    <button class="rpp-tab" data-tab="character" title="Character">👤</button>
-    <button class="rpp-tab" data-tab="lore" title="Lore">🏠</button>
+    <button class="rpp-tab" data-tab="character" title="커리어">💼</button>
+    <button class="rpp-tab" data-tab="lore" title="부동산">🏠</button>
     <button class="rpp-tab" data-tab="settings" title="Settings">⚙️</button>
     <div class="rpp-tab-spacer"></div>
     <button id="rpp-inject-toggle" class="rpp-tab rpp-inject-btn" title="Toggle RP injection">📤</button>
@@ -871,60 +872,89 @@ function renderSettings() {
 
   <!-- 날짜 동기화 -->
   <div class="rpp-es-section">
-    <div class="rpp-es-title">🕐 Date Sync</div>
+    <div class="rpp-es-title">🕐 날짜 동기화</div>
     <div class="cal-dt-display" style="margin-bottom:10px">
       ${S().currentDT?`<div class="cal-dt-date">${fmtDate(S().currentDT)} <span class="cal-dt-day">${fmtDayName(S().currentDT)}</span></div>${fmtTime(S().currentDT)?`<div class="cal-dt-time">${fmtTime(S().currentDT)}</div>`:''}`:
-      '<div class="cal-dt-unset">No date synced</div>'}
+      '<div class="cal-dt-unset">날짜 미설정</div>'}
     </div>
     <div class="sync-mode-btns">
-      <button id="sync-auto-btn" class="rpp-btn rpp-btn-xs ${s.syncMode==='auto'?'active-sync':''}">🟢 Auto</button>
-      <button id="sync-manual-btn" class="rpp-btn rpp-btn-xs ${s.syncMode==='manual'?'active-sync':''}">🔵 Sync once</button>
-      <button id="sync-off-btn" class="rpp-btn rpp-btn-xs ${s.syncMode==='off'?'active-sync-off':''}">🔴 Off</button>
+      <button id="sync-auto-btn" class="rpp-btn rpp-btn-xs ${s.syncMode==='auto'?'active-sync':''}">🟢 자동</button>
+      <button id="sync-manual-btn" class="rpp-btn rpp-btn-xs">🔵 지금 동기화</button>
+      <button id="sync-off-btn" class="rpp-btn rpp-btn-xs ${s.syncMode==='off'?'active-sync-off':''}">🔴 끄기</button>
     </div>
-    <div class="rpp-es-hint" style="margin-top:6px">${syncStateLabel}</div>
+    <div class="rpp-es-hint" style="margin-top:6px">
+      ${s.syncMode==='auto'?'🟢 자동 — 메시지마다 자동 파싱':s.syncMode==='off'?'🔴 꺼짐 — 동기화 없음':'🔵 수동 전용'}
+    </div>
+    <!-- 수동 날짜 직접 입력 -->
+    <div class="manual-dt-form">
+      <div class="rpp-es-hint" style="margin-bottom:6px">직접 입력:</div>
+      <div class="manual-dt-row">
+        <input id="mdt-year"  type="number" class="rpp-inp" placeholder="연도" style="width:62px">
+        <span class="rpp-sep">년</span>
+        <input id="mdt-month" type="number" class="rpp-inp" placeholder="월" min="1" max="12" style="width:44px">
+        <span class="rpp-sep">월</span>
+        <input id="mdt-day"   type="number" class="rpp-inp" placeholder="일" min="1" max="31" style="width:44px">
+        <span class="rpp-sep">일</span>
+      </div>
+      <div class="manual-dt-row">
+        <input id="mdt-hour"  type="number" class="rpp-inp" placeholder="시" min="0" max="23" style="width:44px">
+        <span class="rpp-sep">:</span>
+        <input id="mdt-min"   type="number" class="rpp-inp" placeholder="분" min="0" max="59" style="width:44px">
+        <input id="mdt-season" type="text"  class="rpp-inp" placeholder="계절" style="width:58px">
+        <button id="mdt-save" class="rpp-btn rpp-btn-primary rpp-btn-xs">저장</button>
+      </div>
+    </div>
   </div>
 
   <!-- 연결 프로필 -->
   <div class="rpp-es-section">
-    <div class="rpp-es-title">🔗 Connection Profile (for sync)</div>
+    <div class="rpp-es-title">🔗 연결 프로필 (동기화용)</div>
     <select id="rpp-es-profile" class="rpp-es-select">
-      <option value="">Follow main API</option>
+      <option value="">메인 API 따라가기</option>
       ${profileOpts}
     </select>
   </div>
 
   <!-- 롤플 반영 -->
   <div class="rpp-es-section">
-    <div class="rpp-es-title">📤 RP Injection</div>
+    <div class="rpp-es-title">📤 롤플 반영</div>
     <div class="rpp-es-row">
-      <span class="rpp-es-label">Inject to context</span>
+      <span class="rpp-es-label">Context 주입</span>
       <button id="rpp-inject-toggle-settings" class="rpp-btn rpp-btn-xs ${s.injectEnabled?'inject-on':'inject-off'}">
-        ${s.injectEnabled?'ON ✓':'OFF ✗'}
+        ${s.injectEnabled?'켜짐 ✓':'꺼짐 ✗'}
       </button>
     </div>
     <div class="rpp-es-row" style="margin-top:6px">
       <span class="rpp-es-label">Depth</span>
       <input type="number" id="rpp-es-depth" class="rpp-es-num" value="${s.injectDepth}" min="0" max="10">
-      <span class="rpp-es-hint">0=system end, 2=before last msg</span>
+      <span class="rpp-es-hint">0=시스템끝, 2=마지막 메시지 앞</span>
     </div>
   </div>
 
   <!-- 주입 미리보기 -->
   <div class="rpp-es-section rpp-es-preview">
-    <div class="rpp-es-title">👁 Injection Preview</div>
+    <div class="rpp-es-title">👁 주입 내용 미리보기</div>
     <pre class="rpp-es-pre">${esc(previewText)}</pre>
   </div>
 
   <!-- 백업 -->
   <div class="rpp-es-section">
-    <div class="rpp-es-title">💾 Backup</div>
+    <div class="rpp-es-title">💾 백업</div>
     <div class="backup-btn-row">
-      <button class="rpp-btn rpp-btn-xs" id="backup-create-btn">+ Save slot</button>
-      <button class="rpp-btn rpp-btn-xs" id="backup-export-btn">📤 Export file</button>
-      <label class="rpp-btn rpp-btn-xs" id="backup-import-label">📥 Import file<input type="file" id="backup-import-input" accept=".json" style="display:none"></label>
-      <button class="rpp-btn rpp-btn-xs backup-danger" id="backup-clear-btn">🗑 Clear all</button>
+      <button class="rpp-btn rpp-btn-xs" id="backup-create-btn">+ 슬롯 저장</button>
+      <button class="rpp-btn rpp-btn-xs" id="backup-export-btn">📤 파일 내보내기</button>
+      <label class="rpp-btn rpp-btn-xs" id="backup-import-label">📥 파일 불러오기<input type="file" id="backup-import-input" accept=".json" style="display:none"></label>
     </div>
     <div id="backup-slots">${backupHTML}</div>
+  </div>
+
+  <!-- 전체 초기화 -->
+  <div class="rpp-es-section rpp-reset-section">
+    <div class="rpp-es-title">⚠️ 전체 초기화</div>
+    <div class="rpp-es-hint" style="margin-bottom:8px;color:#c04040">
+      모든 스케쥴, 커리어, 부동산, 날짜 데이터가 삭제됩니다. 복구할 수 없습니다.
+    </div>
+    <button class="rpp-btn rpp-btn-xs reset-all-btn" id="reset-all-btn">🗑 전체 초기화</button>
   </div>
 
 </div>`;
@@ -935,23 +965,36 @@ function bindSettingsEvents() {
 
     // 동기화 모드
     document.getElementById('sync-auto-btn')?.addEventListener('click',e=>{
-        e.stopPropagation();s.syncMode='auto';save();switchTab('settings');toast('Auto sync enabled');
+        e.stopPropagation();s.syncMode='auto';save();switchTab('settings');toast('자동 동기화 켜짐');
     });
     document.getElementById('sync-manual-btn')?.addEventListener('click',e=>{
         e.stopPropagation();
         const{dateUpdated,added}=parseAllMessages();
-        let msg='Synced';
-        if(dateUpdated&&added)msg=`Date updated + ${added} schedules found`;
-        else if(dateUpdated)msg='Date updated';
-        else if(added)msg=`${added} schedules found`;
-        else msg='Nothing new found';
-        // ST 알림 또는 toast
-        if(window.toastr)window.toastr.info(msg,'RP Planner Sync');
+        let msg='새로운 정보 없음';
+        if(dateUpdated&&added)msg=`날짜 갱신 + ${added}개 일정 감지`;
+        else if(dateUpdated)msg='날짜/시간 갱신됨';
+        else if(added)msg=`${added}개 일정 감지됨`;
+        if(window.toastr)window.toastr.info(msg,'RP Planner');
         else alert(msg);
         switchTab('settings');
     });
     document.getElementById('sync-off-btn')?.addEventListener('click',e=>{
-        e.stopPropagation();s.syncMode='off';save();switchTab('settings');toast('Sync disabled');
+        e.stopPropagation();s.syncMode='off';save();switchTab('settings');toast('동기화 꺼짐');
+    });
+
+    // 수동 날짜 직접 입력
+    document.getElementById('mdt-save')?.addEventListener('click',e=>{
+        e.stopPropagation();
+        const year  =parseInt(document.getElementById('mdt-year').value)||null;
+        const month =parseInt(document.getElementById('mdt-month').value);
+        const day   =parseInt(document.getElementById('mdt-day').value);
+        const hour  =document.getElementById('mdt-hour').value!==''?parseInt(document.getElementById('mdt-hour').value):null;
+        const minute=document.getElementById('mdt-min').value!==''?parseInt(document.getElementById('mdt-min').value):null;
+        const season=document.getElementById('mdt-season').value.trim()||null;
+        if(!month||!day){toast('월/일은 필수입니다',true);return;}
+        s.currentDT={year,month,day,hour,minute,season};
+        sortAndAutoCheck();save();injectContext();
+        switchTab('settings');toast('날짜 설정 완료');
     });
 
     // 연결 프로필
@@ -992,11 +1035,13 @@ function bindSettingsEvents() {
         }catch(err){toast('Import failed: '+err.message,true);}
     });
 
-    // 전체 삭제
-    document.getElementById('backup-clear-btn')?.addEventListener('click',e=>{
+    // 전체 초기화
+    document.getElementById('reset-all-btn')?.addEventListener('click',e=>{
         e.stopPropagation();
-        if(confirm('Clear ALL data? This cannot be undone.')){
-            clearAllData();toast('All data cleared');switchTab('settings');
+        if(confirm('⚠️ 전체 초기화\n\n모든 스케쥴, 커리어, 부동산, 날짜 데이터가 삭제됩니다.\n이 작업은 복구할 수 없습니다.\n\n계속하시겠습니까?')){
+            clearAllData();
+            toast('전체 초기화 완료');
+            switchTab('settings');
         }
     });
 
