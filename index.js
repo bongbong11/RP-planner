@@ -78,7 +78,6 @@ function uid()  { return Date.now().toString(36)+Math.random().toString(36).slic
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 function cmpDate(a, b, defaultYear = 2027) {
-    // 스케쥴에 연도(year)가 null이면 현재 롤플 연도를 기준으로 삼아 비교합니다.
     const ay = a.year ?? b.year ?? defaultYear;
     const by = b.year ?? a.year ?? defaultYear;
     if (ay !== by) return ay - by;
@@ -117,50 +116,153 @@ function parseInfoBlock(text) {
     return r;
 }
 
-function parseSchedulesFromText(text,cur) {
-    const found=[],seen=new Set();
-    // 한국어
-    const koRe=/(\d{1,2})월\s*(\d{1,2})일[에는]?\s*[,：:—\-]?\s*([^\n。.]{3,50})/g;
-    let m;
-    while((m=koRe.exec(text))!==null){
-        const mo=+m[1],d=+m[2];
-        const title=m[3].trim().replace(/[。.,\s]+$/,'').replace(/^\*+\s*[—\-]\s*/,'');
-        if(title.length<2)continue;
-        const k=`${mo}-${d}-${title}`;
-        if(!seen.has(k)){seen.add(k);found.push({month:mo,day:d,title});}
-    }
-    // 영어 월
-    const months={january:1,february:2,march:3,april:4,may:5,june:6,july:7,august:8,september:9,october:10,november:11,december:12,jan:1,feb:2,mar:3,apr:4,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
-    const enRe=/(?:\*{0,2}~?)\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\.?\s+(\d{1,2})(?:[–\-]\d{1,2})?(?:st|nd|rd|th)?(?:\s*\(approx[^)]*\))?(?:\*{0,2})?\s*[:\-—]+\s*(?:\*{0,2})([^\n*✅⚠️]{2,80})/gi;
-    while((m=enRe.exec(text))!==null){
-        const mo=months[m[1].toLowerCase()],d=+m[2];
-        const title=m[3].trim().replace(/[.,\s]+$/,'').replace(/^\*+\s*[—\-]\s*/,'');
-        if(!title||title.length<2)continue;
-        const k=`${mo}-${d}-${title}`;
-        if(!seen.has(k)){seen.add(k);found.push({month:mo,day:d,title});}
-    }
-    // 상대날짜
-    if(cur){
-        const relMap={'오늘':0,'내일':1,'모레':2,'내일모레':2,'어제':-1,today:0,tomorrow:1,yesterday:-1};
-        const relRe=/\b(오늘|내일모레|내일|모레|어제|today|tomorrow|yesterday)\b[에는]?\s*[,：:—\-]?\s*([^\n。.]{3,40})/gi;
-        while((m=relRe.exec(text))!==null){
-            const offset=relMap[m[1].toLowerCase()]??0;
-            const title=m[2].trim().replace(/[.,\s]+$/,'');
-            if(title.length<2)continue;
-            const nd=cur.day+offset;
-            const k=`${cur.month}-${nd}-${title}`;
-            if(!seen.has(k)){seen.add(k);found.push({month:cur.month,day:nd,title});}
+// ─── 영입영출 최적화 텍스트 스케쥴 파싱 ───────────────────────────
+function parseSchedulesFromText(text, currentDT) {
+    const results = [];
+    if (!text) return results;
+
+    const baseYear = currentDT?.year || 2027; 
+    const textLower = text.toLowerCase();
+
+    const monthsMap = {
+        jan:1, january:1, feb:2, february:2, mar:3, march:3, apr:4, april:4,
+        may:5, jun:6, june:6, jul:7, july:7, aug:8, august:8, sep:9, september:9,
+        oct:10, october:10, nov:11, november:11, dec:12, december:12
+    };
+
+    // [보정 패턴 1] 기간형 날짜 처리 (May 2-4, June 26 – July 22 등)
+    const rangeRegex = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})\s*(?:-|–|~|to)\s*(?:(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+)?(\d{1,2})\b(?:\s*[:-—|,\s])\s*([^\n|.]+)/gi;
+    let rMatch;
+
+    while ((rMatch = rangeRegex.exec(text)) !== null) {
+        const startMonthStr = rMatch[1].toLowerCase();
+        const startDay = parseInt(rMatch[2]);
+        const endMonthStr = rMatch[3] ? rMatch[3].toLowerCase() : startMonthStr;
+        const endDay = parseInt(rMatch[4]);
+        const rawTitle = rMatch[5];
+
+        const cleanTitleText = cleanEnglishTitle(rawTitle);
+        if (cleanTitleText) {
+            const startMonth = monthsMap[startMonthStr];
+            const endMonth = monthsMap[endMonthStr];
+
+            let startDate = new Date(baseYear, startMonth - 1, startDay);
+            let endDate = new Date(baseYear, endMonth - 1, endDay);
+
+            while (startDate <= endDate) {
+                results.push({
+                    year: startDate.getFullYear(),
+                    month: startDate.getMonth() + 1,
+                    day: startDate.getDate(),
+                    title: cleanTitleText
+                });
+                startDate.setDate(startDate.getDate() + 1);
+            }
         }
     }
-    return found;
+
+    // [보정 패턴 2] 단일 날짜 처리
+    const singleDateRegex = /\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b(?:\s*[:-—|,\s])\s*([^\n|.]+)/gi;
+    let sMatch;
+
+    while ((sMatch = singleDateRegex.exec(text)) !== null) {
+        if (sMatch[0].match(/(?:-|–|~|to)\s*\d+/)) continue;
+
+        const mStr = sMatch[1].toLowerCase();
+        const month = monthsMap[mStr];
+        const day = parseInt(sMatch[2]);
+        const rawTitle = sMatch[3];
+
+        const clean = cleanEnglishTitle(rawTitle);
+        if (month && day && clean) {
+            results.push({ year: baseYear, month: month, day: day, title: clean });
+        }
+    }
+
+    // [보정 패턴 3] 구어체 상대 날짜 (tomorrow 등)
+    const baseMonth = currentDT?.month || (new Date().getMonth() + 1);
+    const baseDay = currentDT?.day || new Date().getDate();
+    
+    if (textLower.includes('tomorrow')) {
+        const regex = /tomorrow(?:[^a-zA-Z0-9]*)(?:we\s+need\s+to|let's|starts)?\s*([^(\n.,!?~]+)/i;
+        const match = regex.exec(text);
+        if (match) {
+            const clean = cleanEnglishTitle(match[1]);
+            if (clean) {
+                const tDate = new Date(baseYear, baseMonth - 1, baseDay + 1);
+                results.push({
+                    year: tDate.getFullYear(),
+                    month: tDate.getMonth() + 1,
+                    day: tDate.getDate(),
+                    title: clean
+                });
+            }
+        }
+    }
+
+    return results;
+}
+
+// ─── 영어 타이틀 정제 헬퍼 함수 ────────────────────────────────────
+function cleanEnglishTitle(title) {
+    let t = title.trim();
+    t = t.replace(/\s*\([^)]*\)/g, '');
+    t = t.replace(/\|.*/, '').replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?"']/g, "").trim();
+
+    const junkPrefixes = [
+        /^(?:we\s+should\s+)/i, /^(?:we\s+need\s+to\s+)/i, /^(?:let's\s+)/i,
+        /^(?:i\s+will\s+)/i, /^(?:we\s+are\s+going\s+to\s+)/i, /^(?:there\s+is\s+a\s+)/i,
+        /^(?:have\s+a\s+)/i, /^(?:on\s+)/i, /^(?:continued\s+)/i
+    ];
+    for (const regex of junkPrefixes) { t = t.replace(regex, ''); }
+    
+    if (t.length > 0) t = t.charAt(0).toUpperCase() + t.slice(1);
+    if (t.length < 3 || /^(And|The|With|For|But)$/i.test(t)) return null;
+    return t;
+}
+
+// ─── 추출된 스케쥴 배열 가공 및 검증 처리 함수 ───────────────────────────
+function processExtractedSchedules(foundList, currentDT, sourceMode = 'auto') {
+    const d = CD();
+    let added = 0;
+    const baseYear = currentDT?.year || 2027;
+
+    for (const f of foundList) {
+        const targetYear = f.year || baseYear;
+        const targetMonth = f.month;
+        const targetDay = f.day;
+
+        // 동등 비교 필터 (동일 연도/월/일/제목 중복 저장 차단)
+        const isDuplicate = d.schedules.some(x => 
+            (x.year === targetYear || x.year === null) && 
+            x.month === targetMonth && 
+            x.day === targetDay && 
+            x.title === f.title
+        );
+
+        if (!isDuplicate) {
+            d.schedules.push({
+                id: uid(),
+                month: targetMonth,
+                day: targetDay,
+                year: targetYear, 
+                title: f.title,
+                note: f.note || '',
+                done: false,
+                source: sourceMode,
+                createdAt: Date.now()
+            });
+            added++;
+        }
+    }
+    return added;
 }
 
 // ─── 스케쥴 CRUD ─────────────────────────────────────────────
 function sortAndAutoCheck() {
     const d = CD(), cur = S().currentDT;
-    const defaultYear = cur?.year ?? new Date().getFullYear();
+    const defaultYear = cur?.year ?? 2027;
     
-    // 정렬할 때 연도가 없으면 현재 가상 연도를 기준으로 정렬합니다.
     d.schedules.sort((a, b) => cmpDate(a, b, defaultYear));
     
     if (cur) {
@@ -230,93 +332,66 @@ function injectContext() {
     c.setExtensionPrompt?.(INJECT_KEY,buildInjectText(),1,s.injectDepth);
 }
 
-// ─── 전체 채팅 파싱 ──────────────────────────────────────────
-function parseSchedulesFromText(text, currentDT) {
-    const results = [];
-    if (!text) return results;
+// ─── 실리태번 연동 수신 파서 (채팅방 메시지 자동 스캔 브릿지) ──────────────────────
+function parseAllMessages() {
+    const c = getCtx(); const chat = c.chat;
+    if (!chat?.length) return { dateUpdated: false, added: 0 };
+    const aiMsgs = [...chat].filter(m => !m.is_user);
+    if (!aiMsgs.length) return { dateUpdated: false, added: 0 };
 
-    const baseYear = currentDT?.year || 2027; // 오씨 내용에 2027년 명시되어 있으므로 타임라인 기준 우선
-    const textLower = text.toLowerCase();
+    const s = S(); let dateUpdated = false, added = 0;
+    const lastAI = aiMsgs[aiMsgs.length - 1];
+    const dt = parseInfoBlock(lastAI.mes || '');
+    if (dt) { s.currentDT = dt; dateUpdated = true; }
 
-    const monthsMap = {
-        jan:1, january:1, feb:2, february:2, mar:3, march:3, apr:4, april:4,
-        may:5, jun:6, june:6, jul:7, july:7, aug:8, august:8, sep:9, september:9,
-        oct:10, october:10, nov:11, november:11, dec:12, december:12
-    };
-
-    // ─── [보정 패턴 1] 기간형 날짜 처리 (예: May 2-4 또는 June 26 – July 22) ───
-    const rangeRegex = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})\s*(?:-|–|~|to)\s*(?:(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+)?(\d{1,2})\b(?:\s*[:-—|,\s])\s*([^\n|.]+)/gi;
-    let rMatch;
-
-    while ((rMatch = rangeRegex.exec(text)) !== null) {
-        const startMonthStr = rMatch[1].toLowerCase();
-        const startDay = parseInt(rMatch[2]);
-        const endMonthStr = rMatch[3] ? rMatch[3].toLowerCase() : startMonthStr;
-        const endDay = parseInt(rMatch[4]);
-        const rawTitle = rMatch[5];
-
-        const cleanTitleText = cleanEnglishTitle(rawTitle);
-        if (cleanTitleText) {
-            const startMonth = monthsMap[startMonthStr];
-            const endMonth = monthsMap[endMonthStr];
-
-            let startDate = new Date(baseYear, startMonth - 1, startDay);
-            let endDate = new Date(baseYear, endMonth - 1, endDay);
-
-            while (startDate <= endDate) {
-                results.push({
-                    year: startDate.getFullYear(),
-                    month: startDate.getMonth() + 1,
-                    day: startDate.getDate(),
-                    title: cleanTitleText
-                });
-                startDate.setDate(startDate.getDate() + 1);
-            }
-        }
+    for (const msg of aiMsgs) {
+        const found = parseSchedulesFromText(msg.mes || '', s.currentDT);
+        added += processExtractedSchedules(found, s.currentDT, 'auto');
     }
-
-    // ─── [보정 패턴 2] 단일 날짜 처리 (오타 수정 완료) ───
-    const singleDateRegex = /\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b(?:\s*[:-—|,\s])\s*([^\n|.]+)/gi;
-    let sMatch;
-
-    while ((sMatch = singleDateRegex.exec(text)) !== null) {
-        // 💡 sMatch.0 에러 유발 지점을 sMatch[0] 으로 안전하게 수정했습니다.
-        if (sMatch[0].match(/(?:-|–|~|to)\s*\d+/)) continue;
-
-        const mStr = sMatch[1].toLowerCase();
-        const month = monthsMap[mStr];
-        const day = parseInt(sMatch[2]);
-        const rawTitle = sMatch[3];
-
-        const clean = cleanEnglishTitle(rawTitle);
-        if (month && day && clean) {
-            results.push({ year: baseYear, month: month, day: day, title: clean });
-        }
-    }
-
-    // ─── [보정 패턴 3] 구어체 상대 날짜 (tomorrow 등) ───
-    const baseMonth = currentDT?.month || (new Date().getMonth() + 1);
-    const baseDay = currentDT?.day || new Date().getDate();
-    
-    if (textLower.includes('tomorrow')) {
-        const regex = /tomorrow(?:[^a-zA-Z0-9]*)(?:we\s+need\s+to|let's|starts)?\s*([^(\n.,!?~]+)/i;
-        const match = regex.exec(text);
-        if (match) {
-            const clean = cleanEnglishTitle(match[1]);
-            if (clean) {
-                const tDate = new Date(baseYear, baseMonth - 1, baseDay + 1);
-                results.push({
-                    year: tDate.getFullYear(),
-                    month: tDate.getMonth() + 1,
-                    day: tDate.getDate(),
-                    title: clean
-                });
-            }
-        }
-    }
-
-    return results;
+    if (dateUpdated || added) { sortAndAutoCheck(); save(); injectContext(); }
+    return { dateUpdated, added };
 }
+
+function parseLastOnly() {
+    const c = getCtx(); const chat = c.chat;
+    if (!chat?.length) return { dateUpdated: false, added: 0 };
+    const lastAI = [...chat].reverse().find(m => !m.is_user);
+    if (!lastAI) return { dateUpdated: false, added: 0 };
+
+    const text = lastAI.mes || ''; const s = S();
+    const dt = parseInfoBlock(text); let dateUpdated = false, added = 0;
+    if (dt) { s.currentDT = dt; dateUpdated = true; }
+
+    const found = parseSchedulesFromText(text, s.currentDT);
+    added += processExtractedSchedules(found, s.currentDT, 'auto');
+
+    if (dateUpdated || added) { sortAndAutoCheck(); save(); injectContext(); }
+    return { dateUpdated, added };
+}
+
+// ─── 실리태번 모듈 확장 프로그램 초기화 ──────────────────────────────────────
+async function init() {
+    console.log(LOG, "Initializing RP Planner Module...");
+    ctx = SillyTavern.getContext();
+    
+    // 자동 모드 활성화 시 새 메시지 수신마다 동기화 트리거 바인딩
+    SillyTavern.on(event_types.CHARACTER_MESSAGE_RENDERED, () => {
+        if (S().syncMode === 'auto') {
+            parseLastOnly();
+        }
+    });
+    
+    SillyTavern.on(event_types.CHAT_CHANGED, () => {
+        injectContext();
+    });
+
+    injectContext();
+}
+
+// 실리태번 진입점에 모듈 마운트
+$(document).ready(() => {
+    init();
+});
 
 // ─── 백업 ────────────────────────────────────────────────────
 function createBackupSlot(name) {
