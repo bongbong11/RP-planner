@@ -712,3 +712,59 @@
 .reset-all-btn:hover {
   background: #ffb8b8 !important;
 }
+
+/* ─── 일정 불러오기 섹션 ────────────────────────────────────── */
+.sch-import-section {
+  padding: 10px 12px;
+  border-top: 1px solid #e8e3de;
+  background: #faf8ff;
+  flex-shrink: 0;
+}
+.sch-import-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #7c5cbf;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 7px;
+}
+.sch-import-btns {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 7px;
+  flex-wrap: wrap;
+}
+.sch-import-file-btn {
+  cursor: pointer;
+}
+.sch-import-hint {
+  font-size: 0.69rem;
+  color: #b0a898;
+  line-height: 1.7;
+}
+.sch-import-hint code {
+  background: #ede5ff;
+  color: #6b3fa8;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: 'Consolas', monospace;
+  font-size: 0.68rem;
+}
+.sch-scan-status {
+  margin-top: 6px;
+  font-size: 0.76rem;
+  color: #7060a0;
+  padding: 5px 8px;
+  background: #f0e9ff;
+  border-radius: 5px;
+}
+
+/* 스케쥴만 삭제 버튼 */
+.reset-cal-btn {
+  background: #fff0d8 !important;
+  border-color: #e0b060 !important;
+  color: #906020 !important;
+}
+.reset-cal-btn:hover {
+  background: #ffe0b0 !important;
+}
