@@ -573,7 +573,12 @@
   box-shadow: 0 1px 4px rgba(0,0,0,0.04);
 }
 .lore-card-header { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; }
-.lore-title-inp { font-weight: 600 !important; color: #4a6a9a !important; }
+.lore-title-inp { 
+  font-weight: 600 !important; 
+  color: #4a6a9a !important; 
+  flex: 1 !important; 
+  min-width: 0 !important; 
+}
 .lore-card-footer { margin-top: 7px; display: flex; justify-content: flex-end; }
 
 /* ══ TAB 5: SETTINGS ══════════════════════════════════════════ */
