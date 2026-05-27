@@ -866,15 +866,6 @@ function bindScheduleEvents() {
         });
     });
 
-    // ⚡ Sync 버튼 (스케쥴 탭)
-    document.getElementById('sch-sync-btn')?.addEventListener('click',async e=>{
-        e.stopPropagation();
-        const btn=document.getElementById('sch-sync-btn');
-        if(btn){btn.disabled=true;btn.textContent='🔄...';}
-        await doSync(true);
-        if(btn){btn.disabled=false;btn.textContent='⚡ Sync';}
-    });
-
     // 파일 불러오기
     document.getElementById('sch-file-input')?.addEventListener('change',async e=>{
         e.stopPropagation();
