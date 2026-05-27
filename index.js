@@ -77,14 +77,16 @@ function save() { getCtx().saveSettingsDebounced(); }
 function uid()  { return Date.now().toString(36)+Math.random().toString(36).slice(2,5); }
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
-function cmpDate(a,b) {
-    const ay=a.year??0,by=b.year??0;
-    if(ay!==by)return ay-by;
-    if(a.month!==b.month)return a.month-b.month;
-    return a.day-b.day;
+function cmpDate(a, b, defaultYear = 2027) {
+    // 스케쥴에 연도(year)가 null이면 현재 롤플 연도를 기준으로 삼아 비교합니다.
+    const ay = a.year ?? b.year ?? defaultYear;
+    const by = b.year ?? a.year ?? defaultYear;
+    if (ay !== by) return ay - by;
+    if (a.month !== b.month) return a.month - b.month;
+    return a.day - b.day;
 }
-function isPast(s,cur)  { return cur?cmpDate(s,cur)<0:false; }
-function isToday(s,cur) { return cur?cmpDate(s,cur)===0:false; }
+function isPast(s, cur)  { return cur ? cmpDate(s, cur, cur.year) < 0 : false; }
+function isToday(s, cur) { return cur ? cmpDate(s, cur, cur.year) === 0 : false; }
 
 function fmtDate(d) {
     if(!d)return '—';
@@ -155,9 +157,19 @@ function parseSchedulesFromText(text,cur) {
 
 // ─── 스케쥴 CRUD ─────────────────────────────────────────────
 function sortAndAutoCheck() {
-    const d=CD(),cur=S().currentDT;
-    d.schedules.sort(cmpDate);
-    if(cur)d.schedules.forEach(x=>{if(!x.done&&isPast(x,cur))x.done=true;});
+    const d = CD(), cur = S().currentDT;
+    const defaultYear = cur?.year ?? new Date().getFullYear();
+    
+    // 정렬할 때 연도가 없으면 현재 가상 연도를 기준으로 정렬합니다.
+    d.schedules.sort((a, b) => cmpDate(a, b, defaultYear));
+    
+    if (cur) {
+        d.schedules.forEach(x => {
+            if (!x.done && isPast(x, cur)) {
+                x.done = true;
+            }
+        });
+    }
 }
 function addSchedule({month,day,year=null,title,note='',source='manual'}) {
     CD().schedules.push({id:uid(),month:+month,day:+day,year:year?+year:null,title:title.trim(),note:note.trim(),done:false,source,createdAt:Date.now()});
