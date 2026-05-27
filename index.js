@@ -1448,6 +1448,10 @@ function onCharacterChanged() {
 
 // ─── Extensions 설정 탭 등록 ─────────────────────────────────
 function registerSettingsUI() {
+    const s=S();
+    const profiles=getCtx().extensionSettings?.connectionManager?.profiles??[];
+    const profileOpts=profiles.map(p=>`<option value="${esc(p.id)}" ${p.id===s.syncProfileId?'selected':''}>${esc(p.name)}</option>`).join('');
+
     const html=`<div id="rpp-ext-block" class="rpp-ext-block">
       <div class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
@@ -1455,14 +1459,32 @@ function registerSettingsUI() {
           <div class="inline-drawer-icon fa-solid fa-circle-chevron-down"></div>
         </div>
         <div class="inline-drawer-content">
-          <div style="padding:8px;font-size:0.82rem;color:var(--SmartThemeBodyColor,#ccc)">
-            Open the panel (📆) to access full settings, backup, and sync options.
+          <div style="padding:8px;display:flex;flex-direction:column;gap:8px">
+            <div style="font-size:0.82rem;color:var(--SmartThemeBodyColor,#ccc)">
+              스케쥴 AI 파싱에 사용할 연결 프로필을 선택하세요.
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <label style="font-size:0.82rem;color:var(--SmartThemeBodyColor,#ccc);white-space:nowrap">연결 프로필</label>
+              <select id="rpp-ext-profile" class="text_pole" style="flex:1">
+                <option value="">선택 안 함</option>
+                ${profileOpts}
+              </select>
+            </div>
+            <div style="font-size:0.76rem;color:var(--SmartThemeQuoteColor,#aaa)">
+              나머지 설정은 패널(📆)에서 확인하세요.
+            </div>
           </div>
         </div>
       </div>
     </div>`;
     const container=document.getElementById('extensions_settings2')??document.getElementById('extensions_settings');
     container?.insertAdjacentHTML('beforeend',html);
+
+    document.getElementById('rpp-ext-profile')?.addEventListener('change',e=>{
+        S().syncProfileId=e.target.value||null;
+        save();
+        toast('연결 프로필 저장됨');
+    });
 }
 
 // ─── 초기화 ──────────────────────────────────────────────────
