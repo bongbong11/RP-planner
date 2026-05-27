@@ -399,20 +399,52 @@ function parseLastOnly() {
 }
 
 // ─── AI 스케쥴 파싱 (연결 프로필 사용) ──────────────────────
+function extractScheduleRelevantText(chat) {
+    // 날짜/일정 관련 줄만 필터링
+    const datePatterns=[
+        /\d{4}[.\-\/]\d{1,2}[.\-\/]\d{1,2}/,           // 2027.05.02
+        /\d{1,2}월\s*\d{1,2}일/,                          // 5월 2일
+        /\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\s+\d{1,2}/i, // May 2
+        /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i, // Tuesday
+        /\b(tomorrow|next\s+\w+|this\s+\w+|내일|모레|다음\s*주|이번\s*주|다음\s*달|월요일|화요일|수요일|목요일|금요일|토요일|일요일)\b/i,
+        /\b\d{1,2}[\/\-]\d{1,2}\b/,                      // 5/2
+        /\b(schedule|appointment|meeting|plan|event|게임|경기|훈련|미팅|약속|예약|행사)\b/i,
+        /\(OOC:/i,                                         // OOC 블록
+    ];
+
+    const aiMsgs=chat.filter(m=>!m.is_user);
+    const relevantLines=[];
+
+    for(const msg of aiMsgs){
+        const lines=(msg.mes||'').split('\n');
+        for(let i=0;i<lines.length;i++){
+            const line=lines[i];
+            if(datePatterns.some(p=>p.test(line))){
+                // 해당 줄 + 앞뒤 1줄씩
+                const start=Math.max(0,i-1);
+                const end=Math.min(lines.length-1,i+1);
+                for(let j=start;j<=end;j++){
+                    if(lines[j].trim()) relevantLines.push(lines[j]);
+                }
+                relevantLines.push('---');
+                i=end; // 중복 방지
+            }
+        }
+    }
+
+    return relevantLines.join('\n');
+}
+
 async function aiParseSchedules() {
     const s=S(), c=getCtx();
     const profileId=s.syncProfileId;
-    if(!profileId){
-        return{error:'연결 프로필을 먼저 설정해주세요 (설정 탭)'};
-    }
+    if(!profileId) return{error:'연결 프로필을 먼저 설정해주세요 (설정 탭)'};
 
     const chat=c.chat||[];
-    const aiMsgs=chat.filter(m=>!m.is_user);
-    if(!aiMsgs.length)return{error:'채팅 내용이 없습니다'};
+    if(!chat.length) return{error:'채팅 내용이 없습니다'};
 
-    // 최근 50개 메시지로 제한
-    const recentMsgs=aiMsgs.slice(-50);
-    const chatText=recentMsgs.map(m=>m.mes||'').join('\n\n---\n\n');
+    const filteredText=extractScheduleRelevantText(chat);
+    if(!filteredText.trim()) return{added:0};
 
     const curDT=s.currentDT;
     const curDateStr=curDT?`${curDT.year??''}년 ${curDT.month}월 ${curDT.day}일`:null;
@@ -420,25 +452,18 @@ async function aiParseSchedules() {
     const systemPrompt=`You are a schedule extraction assistant for a roleplay chat.
 ${curDateStr?`Current RP date: ${curDateStr}`:''}
 
-Your task:
-1. Read the chat and extract ONLY real scheduled future events/appointments mentioned by characters
-2. Ignore: past narration, general dialogue, character actions, weather descriptions, emotional states
-3. Include: specific dates mentioned, appointments, meetings, events characters plan to attend
-4. Calculate relative dates (tomorrow, next Tuesday, etc.) based on current RP date
-5. For date ranges (May 2-4), include dayEnd field
+Extract ONLY real scheduled future events/appointments. Ignore narration/dialogue/actions.
+Calculate relative dates (tomorrow, next Tuesday) based on current RP date.
+For date ranges (May 2-4), include dayEnd.
 
-Return ONLY a valid JSON array, no explanation, no markdown:
-[{"year":2027,"month":5,"day":3,"dayEnd":5,"title":"Event name","note":"additional detail or null"}]
-
-Rules:
-- title: concise event name only (e.g. "Park visit", "Doctor appointment")  
-- note: location, context, or extra detail (e.g. "festival", "with Olivia") or null
-- If no schedules found, return []`;
+Return ONLY valid JSON array, no explanation:
+[{"year":2027,"month":5,"day":3,"dayEnd":5,"title":"Event name","note":"detail or null"}]
+If nothing found, return []`;
 
     try {
-        const messages=[{role:'user',content:chatText}];
+        const messages=[{role:'user',content:filteredText}];
         const response=await c.ConnectionManagerRequestService.sendRequest(
-            profileId, messages, 2000,
+            profileId, messages, 1000,
             {stream:false, extractData:true, includePreset:true, includeInstruct:false, systemPrompt}
         );
 
@@ -450,10 +475,10 @@ Rules:
 
         const clean=raw.replace(/```json|```/g,'').trim();
         const jsonMatch=clean.match(/\[[\s\S]*\]/);
-        if(!jsonMatch)return{error:'AI 응답을 파싱할 수 없습니다', raw:clean.slice(0,200)};
+        if(!jsonMatch) return{error:'AI 응답 파싱 실패', raw:clean.slice(0,200)};
 
         const parsed=JSON.parse(jsonMatch[0]);
-        if(!Array.isArray(parsed))return{error:'잘못된 응답 형식'};
+        if(!Array.isArray(parsed)) return{error:'잘못된 응답 형식'};
 
         const added=applyParsedSchedules(parsed);
         return{added, parsed};
