@@ -439,7 +439,7 @@ Rules:
         const messages=[{role:'user',content:chatText}];
         const response=await c.ConnectionManagerRequestService.sendRequest(
             profileId, messages, 2000,
-            {stream:false, extractData:true, includePreset:false, includeInstruct:false, systemPrompt}
+            {stream:false, extractData:true, includePreset:true, includeInstruct:false, systemPrompt}
         );
 
         let raw='';
