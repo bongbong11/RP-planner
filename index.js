@@ -78,7 +78,11 @@ function uid()  { return Date.now().toString(36)+Math.random().toString(36).slic
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 function cmpDate(a,b) {
-    const ay=a.year??0,by=b.year??0;
+    // 동기화된 가상 연도가 있으면 그걸 쓰고, 없으면 실제 올해 연도(2026년 등)를 기본값으로 사용
+    const currentYear = S().currentDT?.year ?? new Date().getFullYear();
+    const ay = a.year ?? currentYear;
+    const by = b.year ?? currentYear;
+    
     if(ay!==by)return ay-by;
     if(a.month!==b.month)return a.month-b.month;
     return a.day-b.day;
@@ -117,15 +121,17 @@ function parseInfoBlock(text) {
 
 function parseSchedulesFromText(text,cur) {
     const found=[],seen=new Set();
+    const yr = cur?.year ?? null; // 현재 설정된 가상 날짜의 연도를 가져옴
+    
     // 한국어
     const koRe=/(\d{1,2})월\s*(\d{1,2})일[에는]?\s*[,：:—\-]?\s*([^\n。.]{3,50})/g;
     let m;
     while((m=koRe.exec(text))!==null){
         const mo=+m[1],d=+m[2];
-        const title=m[3].trim().replace(/[。.,\s]+$/,'').replace(/^\*+\s*[—\-]\s*/,'');
+        const title=m[3].trim().replace(/[..,\s]+$/,'').replace(/^\*+\s*[—\-]\s*/,'');
         if(title.length<2)continue;
-        const k=`${mo}-${d}-${title}`;
-        if(!seen.has(k)){seen.add(k);found.push({month:mo,day:d,title});}
+        const k=`${yr ?? 0}-${mo}-${d}-${title}`; // 연도를 고유 키값에 포함
+        if(!seen.has(k)){seen.add(k);found.push({year:yr,month:mo,day:d,title});} // year 추가
     }
     // 영어 월
     const months={january:1,february:2,march:3,april:4,may:5,june:6,july:7,august:8,september:9,october:10,november:11,december:12,jan:1,feb:2,mar:3,apr:4,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
@@ -134,8 +140,8 @@ function parseSchedulesFromText(text,cur) {
         const mo=months[m[1].toLowerCase()],d=+m[2];
         const title=m[3].trim().replace(/[.,\s]+$/,'').replace(/^\*+\s*[—\-]\s*/,'');
         if(!title||title.length<2)continue;
-        const k=`${mo}-${d}-${title}`;
-        if(!seen.has(k)){seen.add(k);found.push({month:mo,day:d,title});}
+        const k=`${yr ?? 0}-${mo}-${d}-${title}`; // 연도를 고유 키값에 포함
+        if(!seen.has(k)){seen.add(k);found.push({year:yr,month:mo,day:d,title});} // year 추가
     }
     // 상대날짜
     if(cur){
@@ -232,11 +238,13 @@ function parseAllMessages() {
     const dt=parseInfoBlock(lastAI.mes||'');
     if(dt){s.currentDT=dt;dateUpdated=true;}
     // 스케쥴은 전체 스캔
+   // 스케쥴은 전체 스캔
     for(const msg of aiMsgs){
         const found=parseSchedulesFromText(msg.mes||'',s.currentDT);
         for(const f of found){
-            if(!d.schedules.some(x=>x.month===f.month&&x.day===f.day&&x.title===f.title)){
-                d.schedules.push({id:uid(),month:f.month,day:f.day,year:null,title:f.title,note:'',done:false,source:'auto',createdAt:Date.now()});
+            // 연도까지 대조하도록 체크 조건 강화
+            if(!d.schedules.some(x=>(x.year??s.currentDT?.year)===f.year&&x.month===f.month&&x.day===f.day&&x.title===f.title)){
+                d.schedules.push({id:uid(),month:f.month,day:f.day,year:f.year,title:f.title,note:'',done:false,source:'auto',createdAt:Date.now()});
                 added++;
             }
         }
@@ -256,10 +264,10 @@ function parseLastOnly() {
     const dt=parseInfoBlock(text);
     let dateUpdated=false,added=0;
     if(dt){s.currentDT=dt;dateUpdated=true;}
-    const found=parseSchedulesFromText(text,s.currentDT);
+   const found=parseSchedulesFromText(text,s.currentDT);
     for(const f of found){
-        if(!d.schedules.some(x=>x.month===f.month&&x.day===f.day&&x.title===f.title)){
-            d.schedules.push({id:uid(),month:f.month,day:f.day,year:null,title:f.title,note:'',done:false,source:'auto',createdAt:Date.now()});
+        if(!d.schedules.some(x=>(x.year??s.currentDT?.year)===f.year&&x.month===f.month&&x.day===f.day&&x.title===f.title)){
+            d.schedules.push({id:uid(),month:f.month,day:f.day,year:f.year,title:f.title,note:'',done:false,source:'auto',createdAt:Date.now()});
             added++;
         }
     }
