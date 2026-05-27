@@ -370,27 +370,26 @@ function parseLastOnly() {
 }
 
 // ─── 실리태번 모듈 확장 프로그램 초기화 ──────────────────────────────────────
-async function init() {
+// 💡 이름을 initPlanner로 바꾸어 충돌을 완전히 방지합니다.
+async function initPlanner() {
     console.log(LOG, "Initializing RP Planner Module...");
     ctx = SillyTavern.getContext();
     
-    // 자동 모드 활성화 시 새 메시지 수신마다 동기화 트리거 바인딩
     SillyTavern.on(event_types.CHARACTER_MESSAGE_RENDERED, () => {
-        if (S().syncMode === 'auto') {
-            parseLastOnly();
+        if (S().syncMode === 'auto') { 
+            parseLastOnly(); 
         }
     });
     
-    SillyTavern.on(event_types.CHAT_CHANGED, () => {
-        injectContext();
+    SillyTavern.on(event_types.CHAT_CHANGED, () => { 
+        injectContext(); 
     });
 
     injectContext();
 }
 
-// 실리태번 진입점에 모듈 마운트
 $(document).ready(() => {
-    init();
+    initPlanner(); // 💡 수정된 이름을 호출합니다.
 });
 
 // ─── 백업 ────────────────────────────────────────────────────
