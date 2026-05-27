@@ -8,8 +8,9 @@
 
 import { saveSettingsDebounced, eventSource, event_types } from '../../../../script.js';
 const getContext = () => SillyTavern.getContext();
-import { extension_settings, setExtensionPrompt } from '../../../extensions.js';
+import { extension_settings } from '../../../extensions.js';
 const extension_prompt_types = { IN_CHAT: 1, BEFORE_PROMPT: 0, IN_PROMPT: 2 };
+const setExtensionPrompt = (...args) => SillyTavern.getContext().setExtensionPrompt?.(...args);
 
 const EXT        = 'rp-planner';
 const INJECT_KEY = 'rp-planner-inject';
