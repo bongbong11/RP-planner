@@ -400,39 +400,8 @@ function parseLastOnly() {
 
 // ─── AI 스케쥴 파싱 (연결 프로필 사용) ──────────────────────
 function extractScheduleRelevantText(chat) {
-    // 날짜/일정 관련 줄만 필터링
-    const datePatterns=[
-        /\d{4}[.\-\/]\d{1,2}[.\-\/]\d{1,2}/,           // 2027.05.02
-        /\d{1,2}월\s*\d{1,2}일/,                          // 5월 2일
-        /\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\s+\d{1,2}/i, // May 2
-        /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i, // Tuesday
-        /\b(tomorrow|next\s+\w+|this\s+\w+|내일|모레|다음\s*주|이번\s*주|다음\s*달|월요일|화요일|수요일|목요일|금요일|토요일|일요일)\b/i,
-        /\b\d{1,2}[\/\-]\d{1,2}\b/,                      // 5/2
-        /\b(schedule|appointment|meeting|plan|event|게임|경기|훈련|미팅|약속|예약|행사)\b/i,
-        /\(OOC:/i,                                         // OOC 블록
-    ];
-
     const aiMsgs=chat.filter(m=>!m.is_user);
-    const relevantLines=[];
-
-    for(const msg of aiMsgs){
-        const lines=(msg.mes||'').split('\n');
-        for(let i=0;i<lines.length;i++){
-            const line=lines[i];
-            if(datePatterns.some(p=>p.test(line))){
-                // 해당 줄 + 앞뒤 1줄씩
-                const start=Math.max(0,i-1);
-                const end=Math.min(lines.length-1,i+1);
-                for(let j=start;j<=end;j++){
-                    if(lines[j].trim()) relevantLines.push(lines[j]);
-                }
-                relevantLines.push('---');
-                i=end; // 중복 방지
-            }
-        }
-    }
-
-    return relevantLines.join('\n');
+    return aiMsgs.map(m=>m.mes||'').join('\n\n---\n\n');
 }
 
 async function aiParseSchedules() {
@@ -449,16 +418,13 @@ async function aiParseSchedules() {
     const curDT=s.currentDT;
     const curDateStr=curDT?`${curDT.year??''}년 ${curDT.month}월 ${curDT.day}일`:null;
 
-    const systemPrompt=`You are a schedule extraction assistant for a roleplay chat.
-${curDateStr?`Current RP date: ${curDateStr}`:''}
-
-Extract ONLY real scheduled future events/appointments. Ignore narration/dialogue/actions.
-Calculate relative dates (tomorrow, next Tuesday) based on current RP date.
-For date ranges (May 2-4), include dayEnd.
-
-Return ONLY valid JSON array, no explanation:
-[{"year":2027,"month":5,"day":3,"dayEnd":5,"title":"Event name","note":"detail or null"}]
-If nothing found, return []`;
+    const systemPrompt=`Extract scheduled events from this roleplay chat. Current RP date: ${curDateStr||'unknown'}.
+Return ONLY JSON array: [{"year":2027,"month":5,"day":3,"dayEnd":5,"title":"Event","note":"detail or null"}]
+- Include only real planned future events mentioned by characters
+- Calculate relative dates (tomorrow=+1day, next Tuesday, etc.) from current RP date
+- dayEnd only for date ranges (May 2-4)
+- Ignore dialogue, actions, narration
+- Return [] if nothing found`;
 
     try {
         const messages=[{role:'user',content:filteredText}];
