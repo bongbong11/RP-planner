@@ -1395,9 +1395,32 @@ function openPanel() {
     });
     document.getElementById('rpp-close')?.addEventListener('click',e=>{e.stopPropagation();closePanel();});
 
-    // ⚡ 수동 동기화
-    document.getElementById('rpp-sync-btn')?.addEventListener('click',async e=>{
-        e.stopPropagation();await doSync(true);
+    // ⚡ 수동 동기화 (작동 먹통 해결 버전)
+    document.getElementById('rpp-sync-btn')?.addEventListener('click', e => {
+        e.stopPropagation();
+        const btn = document.getElementById('rpp-sync-btn');
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = '🔄...';
+        }
+        
+        // 파란 버튼과 똑같이 무한 루프 필터링을 우회하여 직접 파싱을 꽂아줍니다.
+        const { dateUpdated, added } = parseAllMessages();
+        
+        // 알림 토스트 띄우기
+        let msg = 'Workspace up to date.';
+        if (dateUpdated && added) msg = `Timeline advanced & ${added} nodes cached.`;
+        else if (dateUpdated) msg = 'Timeline tracking synchronized.';
+        else if (added) msg = `Cached ${added} new sequences.`;
+        
+        if (window.toastr) window.toastr.info(msg, 'RP Planner');
+        else if (typeof toast === 'function') toast(msg);
+        
+        // 버튼 상태 원상복구
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = '⚡ Sync'; // 혹시 번개 모양 아이콘이 따로 있다면 모양에 맞게 바꾸셔도 됩니다.
+        }
     });
 
     // 📤 주입 토글
