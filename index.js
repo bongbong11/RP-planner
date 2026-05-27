@@ -793,10 +793,10 @@ function renderSchedule() {
       </label>
     </div>
     <div class="sch-import-hint">
-      txt: <code>5/2 : Rookie minicamp / Pittsburgh facility</code><br>
-      범위: <code>5/2-4 : Rookie minicamp</code><br>
-      json: <code>[{"month":5,"day":2,"title":"제목","note":"노트"}]</code>
-    </div>
+  txt: <code>2027/5/2 : Rookie minicamp / Pittsburgh facility</code><br>
+  범위: <code>2027/5/2-4 : Rookie minicamp</code><br>
+  json: <code>[{"year":2027,"month":5,"day":2,"title":"제목","note":"노트"}]</code>
+</div>
     <div id="sch-scan-status" class="sch-scan-status" style="display:none"></div>
   </div>
 
