@@ -29,12 +29,14 @@ const CHAR_DEFAULTS = {
 
 const GLOBAL_DEFAULTS = {
     currentDT:     null,
-    syncMode:      'auto',   // 'auto' | 'manual' | 'off'
+    syncMode:      'auto',
     syncPattern:   'Date: YYYY.MM.DD',
     injectEnabled: true,
     injectDepth:   2,
-    backupSlots:   [],       // [{ id, name, data, savedAt }]
-    charData:      {},       // { char_ID: { schedules, characters, loreEntries } }
+    maxUpcoming:   20,   // 예정 일정 최대 표시 개수
+    maxPast:       10,   // 지난 일정 최대 표시 개수
+    backupSlots:   [],
+    charData:      {},
 };
 
 function S() {
@@ -45,6 +47,8 @@ function S() {
     if(!d.backupSlots)   d.backupSlots=[];
     if(!d.syncPattern)   d.syncPattern='Date: YYYY.MM.DD';
     if(d.syncMode===undefined) d.syncMode='auto';
+    if(d.maxUpcoming===undefined) d.maxUpcoming=20;
+    if(d.maxPast===undefined)     d.maxPast=10;
     return d;
 }
 
@@ -104,12 +108,10 @@ function fmtDayName(d) {
 function parseInfoBlock(text) {
     const dateRe  =/(?:Date|날짜)\s*:\s*(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})/i;
     const timeRe  =/(?:Time|시간)\s*:\s*(\d{1,2}):(\d{2})/i;
-    const seasonRe=/(?:Season|계절)\s*:\s*([^\|\n\r]{1,20})/i;
     const dm=dateRe.exec(text);
     if(!dm)return null;
     const r={year:+dm[1],month:+dm[2],day:+dm[3],hour:null,minute:null,season:null};
-    const tm=timeRe.exec(text);   if(tm){r.hour=+tm[1];r.minute=+tm[2];}
-    const sm=seasonRe.exec(text); if(sm)r.season=sm[1].trim();
+    const tm=timeRe.exec(text); if(tm){r.hour=+tm[1];r.minute=+tm[2];}
     return r;
 }
 
@@ -184,13 +186,13 @@ function buildInjectText() {
         const season=cur.season?` | Season: ${cur.season}`:'';
         lines.push(`[RP Current Date: ${dt}${t?` | Time: ${t}`:''}${season}]`);
     }
-    const upcoming=d.schedules.filter(x=>!x.done&&(!cur||!isPast(x,cur)));
+    const upcoming=d.schedules.filter(x=>!x.done&&(!cur||!isPast(x,cur))).slice(0,s.maxUpcoming??20);
     if(upcoming.length){
         lines.push('[RP Upcoming Schedule:');
         upcoming.forEach(x=>{const note=x.note?` (${x.note})`:'';lines.push(`  - ${x.month}/${x.day}: ${x.title}${note}`);});
         lines.push(']');
     }
-    const past=d.schedules.filter(x=>x.done||(cur&&isPast(x,cur)));
+    const past=d.schedules.filter(x=>x.done||(cur&&isPast(x,cur))).slice(-(s.maxPast??10));
     if(past.length){
         lines.push('[RP Past Events (already occurred — do not repeat or initiate again):');
         past.forEach(x=>{const note=x.note?` (${x.note})`:'';lines.push(`  - ${x.month}/${x.day}: ${x.title}${note} — completed`);});
@@ -896,12 +898,23 @@ function renderSettings() {
         <span class="rpp-sep">일</span>
       </div>
       <div class="manual-dt-row">
-        <input id="mdt-hour"  type="number" class="rpp-inp" placeholder="시" min="0" max="23" style="width:44px">
-        <span class="rpp-sep">:</span>
-        <input id="mdt-min"   type="number" class="rpp-inp" placeholder="분" min="0" max="59" style="width:44px">
-        <input id="mdt-season" type="text"  class="rpp-inp" placeholder="계절" style="width:58px">
         <button id="mdt-save" class="rpp-btn rpp-btn-primary rpp-btn-xs">저장</button>
       </div>
+    </div>
+  </div>
+
+  <!-- 일정 표시 개수 -->
+  <div class="rpp-es-section">
+    <div class="rpp-es-title">📋 일정 표시 개수</div>
+    <div class="rpp-es-row">
+      <span class="rpp-es-label">예정 최대</span>
+      <input type="number" id="rpp-max-upcoming" class="rpp-es-num" value="${s.maxUpcoming}" min="1" max="100">
+      <span class="rpp-es-hint">개</span>
+    </div>
+    <div class="rpp-es-row" style="margin-top:6px">
+      <span class="rpp-es-label">지난 최대</span>
+      <input type="number" id="rpp-max-past" class="rpp-es-num" value="${s.maxPast}" min="1" max="100">
+      <span class="rpp-es-hint">개</span>
     </div>
   </div>
 
@@ -987,13 +1000,20 @@ function bindSettingsEvents() {
         const year  =parseInt(document.getElementById('mdt-year').value)||null;
         const month =parseInt(document.getElementById('mdt-month').value);
         const day   =parseInt(document.getElementById('mdt-day').value);
-        const hour  =document.getElementById('mdt-hour').value!==''?parseInt(document.getElementById('mdt-hour').value):null;
-        const minute=document.getElementById('mdt-min').value!==''?parseInt(document.getElementById('mdt-min').value):null;
-        const season=document.getElementById('mdt-season').value.trim()||null;
         if(!month||!day){toast('월/일은 필수입니다',true);return;}
-        s.currentDT={year,month,day,hour,minute,season};
+        // 기존 시간/계절은 유지
+        const prev=s.currentDT;
+        s.currentDT={year,month,day,hour:prev?.hour??null,minute:prev?.minute??null,season:prev?.season??null};
         sortAndAutoCheck();save();injectContext();
         switchTab('settings');toast('날짜 설정 완료');
+    });
+
+    // 일정 표시 개수
+    document.getElementById('rpp-max-upcoming')?.addEventListener('change',e=>{
+        e.stopPropagation();s.maxUpcoming=parseInt(e.target.value)||20;save();injectContext();
+    });
+    document.getElementById('rpp-max-past')?.addEventListener('change',e=>{
+        e.stopPropagation();s.maxPast=parseInt(e.target.value)||10;save();injectContext();
     });
 
     // 연결 프로필
