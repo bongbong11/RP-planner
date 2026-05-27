@@ -351,13 +351,15 @@ async function importScheduleFile(file) {
                         const l=line.trim();
                         if(!l||l.startsWith('#'))continue;
                         // 패턴: M/D 또는 M/D-D : 제목 / 노트
-                        const m=l.match(/^(\d{1,2})\/(\d{1,2})(?:-(\d{1,2}))?\s*[:：]\s*(.+)/);
-                        if(!m)continue;
-                        const [,mo,d1,d2,rest]=m;
-                        const parts=rest.split('/');
-                        const title=parts[0].trim();
-                        const note=parts[1]?.trim()||'';
-                        parsed.push({month:+mo,day:+d1,dayEnd:d2?+d2:undefined,title,note,year:yr});
+                       // 바꿀 위치: const m=l.match(...) 부터 parsed.push(...) 까지
+
+const m=l.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})(?:-(\d{1,2}))?\s*[:：]\s*(.+)/);
+if(!m)continue;
+const [,ye,mo,d1,d2,rest]=m;
+const parts=rest.split('/');
+const title=parts[0].trim();
+const note=parts[1]?.trim()||'';
+parsed.push({year:+ye,month:+mo,day:+d1,dayEnd:d2?+d2:undefined,title,note});
                     }
                     added=applyParsedSchedules(parsed);
                 }
@@ -793,9 +795,10 @@ function renderSchedule() {
       </label>
     </div>
     <div class="sch-import-hint">
-  txt: <code>2027/5/2 : Rookie minicamp / Pittsburgh facility</code><br>
-  범위: <code>2027/5/2-4 : Rookie minicamp</code><br>
-  json: <code>[{"year":2027,"month":5,"day":2,"title":"제목","note":"노트"}]</code>
+  <!-- 바꿀 위치: <div class="sch-import-hint"> 내부 -->
+txt: <code>2027/5/2 : Rookie minicamp / Pittsburgh facility</code><br>
+범위: <code>2027/5/2-4 : Rookie minicamp</code><br>
+json: <code>[{"year":2027,"month":5,"day":2,"title":"제목","note":"노트"}]</code>
 </div>
     <div id="sch-scan-status" class="sch-scan-status" style="display:none"></div>
   </div>
