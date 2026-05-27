@@ -48,6 +48,7 @@ function S() {
     if(d.syncMode===undefined) d.syncMode='auto';
     if(d.maxUpcoming===undefined) d.maxUpcoming=20;
     if(d.maxPast===undefined)     d.maxPast=10;
+    if(d.darkMode===undefined)    d.darkMode=false;
     return d;
 }
 
@@ -891,6 +892,15 @@ function renderSettings() {
 
     return `<div class="rpp-settings-wrap">
   <div class="rpp-es-section">
+    <div class="rpp-es-title">🎨 테마</div>
+    <div class="rpp-es-row">
+      <span class="rpp-es-label">다크 모드</span>
+      <button id="rpp-theme-toggle" class="rpp-btn rpp-btn-xs ${s.darkMode?'active-sync':''}">
+        ${s.darkMode?'🌙 Dark':'☀️ Light'}
+      </button>
+    </div>
+  </div>
+  <div class="rpp-es-section">
     <div class="rpp-es-title">🕐 날짜 동기화</div>
     <div class="cal-dt-display" style="margin-bottom:10px">
       ${S().currentDT?`<div class="cal-dt-date">${fmtDate(S().currentDT)} <span class="cal-dt-day">${fmtDayName(S().currentDT)}</span></div>${fmtTime(S().currentDT)?`<div class="cal-dt-time">${fmtTime(S().currentDT)}</div>`:''}`:
@@ -985,7 +995,11 @@ function bindSettingsEvents() {
         calYear=year??calYear;calMonth=month;
         sortAndAutoCheck();save();injectContext();switchTab('settings');toast('날짜 설정 완료');
     });
-    document.getElementById('rpp-max-upcoming')?.addEventListener('change',e=>{e.stopPropagation();s.maxUpcoming=parseInt(e.target.value)||20;save();injectContext();});
+    document.getElementById('rpp-theme-toggle')?.addEventListener('click',e=>{
+        e.stopPropagation();
+        const s=S();s.darkMode=!s.darkMode;save();
+        applyTheme();switchTab('settings');
+    });e.stopPropagation();s.maxUpcoming=parseInt(e.target.value)||20;save();injectContext();});
     document.getElementById('rpp-max-past')?.addEventListener('change',e=>{e.stopPropagation();s.maxPast=parseInt(e.target.value)||10;save();injectContext();});
     document.getElementById('rpp-es-profile')?.addEventListener('change',e=>{e.stopPropagation();s.syncProfileId=e.target.value||null;save();});
     document.getElementById('rpp-inject-toggle-settings')?.addEventListener('click',e=>{e.stopPropagation();s.injectEnabled=!s.injectEnabled;save();injectContext();updateHeaderBtns();switchTab('settings');});
@@ -1067,6 +1081,12 @@ async function doSync(showAlert=false) {
 // ─── 패널 열기/닫기 ──────────────────────────────────────────
 let _outsideH=null;
 
+function applyTheme() {
+    const panel=document.getElementById('rpp-panel');
+    if(!panel)return;
+    panel.classList.toggle('rpp-dark',S().darkMode);
+}
+
 function openPanel() {
     if(document.getElementById('rpp-panel'))return;
     const wrap=document.createElement('div');
@@ -1093,6 +1113,7 @@ function openPanel() {
     });
 
     panelOpen=true;
+    applyTheme();
     // 현재 RP 날짜로 달력 초기화
     const cur=S().currentDT;
     if(cur){calYear=cur.year??new Date().getFullYear();calMonth=cur.month;}
