@@ -1395,32 +1395,41 @@ function openPanel() {
     });
     document.getElementById('rpp-close')?.addEventListener('click',e=>{e.stopPropagation();closePanel();});
 
-    // ⚡ 수동 동기화 (작동 먹통 해결 버전)
+    // ⚡ 수동 동기화 (글자 없이 아이콘만 변경 + 토스트 알림 완벽 작동 버전)
     document.getElementById('rpp-sync-btn')?.addEventListener('click', e => {
         e.stopPropagation();
         const btn = document.getElementById('rpp-sync-btn');
         if (btn) {
             btn.disabled = true;
-            btn.textContent = '🔄...';
+            btn.innerHTML = '🔄'; // 누르면 글자 없이 회전 아이콘만 표시
         }
         
-        // 파란 버튼과 똑같이 무한 루프 필터링을 우회하여 직접 파싱을 꽂아줍니다.
-        const { dateUpdated, added } = parseAllMessages();
-        
-        // 알림 토스트 띄우기
-        let msg = 'Workspace up to date.';
-        if (dateUpdated && added) msg = `Timeline advanced & ${added} nodes cached.`;
-        else if (dateUpdated) msg = 'Timeline tracking synchronized.';
-        else if (added) msg = `Cached ${added} new sequences.`;
-        
-        if (window.toastr) window.toastr.info(msg, 'RP Planner');
-        else if (typeof toast === 'function') toast(msg);
-        
-        // 버튼 상태 원상복구
-        if (btn) {
-            btn.disabled = false;
-            btn.textContent = '⚡ Sync'; // 혹시 번개 모양 아이콘이 따로 있다면 모양에 맞게 바꾸셔도 됩니다.
-        }
+        // 브라우저가 아이콘을 먼저 바꿀 수 있도록 0.05초 미세한 버퍼를 둡니다.
+        setTimeout(() => {
+            try {
+                // 파랑 버튼처럼 직접 메시지를 파싱합니다.
+                const { dateUpdated, added } = parseAllMessages();
+                
+                // [알림 토스트 출력] 파싱 결과에 따라 알맞은 메시지가 화면에 뜹니다.
+                let msg = 'Workspace up to date.';
+                if (dateUpdated && added) msg = `Timeline advanced & ${added} nodes cached.`;
+                else if (dateUpdated) msg = 'Timeline tracking synchronized.';
+                else if (added) msg = `Cached ${added} new sequences.`;
+                
+                if (window.toastr) window.toastr.info(msg, 'RP Planner');
+                else if (typeof toast === 'function') toast(msg);
+                
+            } catch (err) {
+                console.error('[RPPlanner] Sync 에러:', err);
+                if (typeof toast === 'function') toast('Sync failed', true);
+            } finally {
+                // 읽기가 끝나면 다시 원래의 번개 아이콘 하나로 원상복구
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = '⚡'; 
+                }
+            }
+        }, 50);
     });
 
     // 📤 주입 토글
