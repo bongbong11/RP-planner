@@ -26,16 +26,17 @@ const CHAR_DEFAULTS = {
     characters:  [],
     loreEntries: [],
     backupSlots: [],
+    currentDT:   null,
 };
 
 const GLOBAL_DEFAULTS = {
-    currentDT:     null,
     syncMode:      'auto',
     syncPattern:   'Date: YYYY.MM.DD',
     injectEnabled: true,
     injectDepth:   2,
     maxUpcoming:   20,
     maxPast:       10,
+    darkMode:      false,
     charData:      {},
 };
 
@@ -78,7 +79,7 @@ function uid()  { return Date.now().toString(36)+Math.random().toString(36).slic
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 function cmpDate(a,b) {
-    const currentYear=S().currentDT?.year??new Date().getFullYear();
+    const currentYear=CD().currentDT?.year??new Date().getFullYear();
     const ay=a.year??currentYear;
     const by=b.year??currentYear;
     if(ay!==by)return ay-by;
@@ -121,7 +122,7 @@ function parseInfoBlock(text) {
 // May 1 — 내용 / May 1-3 — 내용 / May 1~3 — 내용 / **May 1** — 내용 / - May 1 — 내용
 function parseOOCSchedules(chat) {
     const s=S();
-    const yr=s.currentDT?.year??null;
+    const yr=CD().currentDT?.year??null;
     const months={january:1,february:2,march:3,april:4,may:5,june:6,july:7,august:8,
                   september:9,october:10,november:11,december:12,
                   jan:1,feb:2,mar:3,apr:4,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
@@ -180,7 +181,7 @@ function parseOOCSchedules(chat) {
 // 파싱 결과를 스케쥴에 등록 (날짜 범위 펼치기 포함)
 function applyParsedSchedules(parsed) {
     const d=CD(), s=S();
-    const yr=s.currentDT?.year??null;
+    const yr=CD().currentDT?.year??null;
     let added=0;
     for(const f of parsed) {
         if(!f.month||!f.day) continue;
@@ -254,7 +255,7 @@ function parseAllMessages() {
     let dateUpdated=false;
     const lastAI=aiMsgs[aiMsgs.length-1];
     const dt=parseInfoBlock(lastAI.mes||'');
-    if(dt){s.currentDT=dt;dateUpdated=true;calYear=dt.year??calYear;calMonth=dt.month??calMonth;save();injectContext();}
+    if(dt){CD().currentDT=dt;dateUpdated=true;calYear=dt.year??calYear;calMonth=dt.month??calMonth;save();injectContext();}
     return{dateUpdated,added:0};
 }
 
@@ -267,7 +268,7 @@ function parseLastOnly() {
     const s=S();
     const dt=parseInfoBlock(lastAI.mes||'');
     let dateUpdated=false;
-    if(dt){s.currentDT=dt;dateUpdated=true;calYear=dt.year??calYear;calMonth=dt.month??calMonth;save();injectContext();}
+    if(dt){CD().currentDT=dt;dateUpdated=true;calYear=dt.year??calYear;calMonth=dt.month??calMonth;save();injectContext();}
     return{dateUpdated,added:0};
 }
 
@@ -288,7 +289,7 @@ async function aiParseSchedules(excludeDates=[]) {
     const filteredText=extractScheduleRelevantText(chat);
     if(!filteredText.trim()) return{added:0};
 
-    const curDT=s.currentDT;
+    const curDT=CD().currentDT;
     const curDateStr=curDT?`${curDT.year??''}년 ${curDT.month}월 ${curDT.day}일`:null;
 
     // 이미 OOC 파싱으로 잡힌 날짜는 제외
@@ -336,7 +337,7 @@ Return ONLY JSON array: [{"year":2027,"month":5,"day":3,"dayEnd":5,"title":"Even
 
 // ─── 스케쥴 CRUD ─────────────────────────────────────────────
 function sortAndAutoCheck() {
-    const d=CD(),cur=S().currentDT;
+    const d=CD(),cur=CD().currentDT;
     d.schedules.sort(cmpDate);
     if(cur)d.schedules.forEach(x=>{if(!x.done&&isPast(x,cur))x.done=true;});
 }
@@ -361,7 +362,7 @@ function updateLore(id,title,content) {
 
 // ─── Context 주입 ─────────────────────────────────────────────
 function buildInjectText() {
-    const s=S(),d=CD(),cur=s.currentDT,lines=[];
+    const s=S(),d=CD(),cur=CD().currentDT,lines=[];
     if(cur){
         const dt=fmtDate(cur),t=fmtTime(cur);
         const season=cur.season?` | Season: ${cur.season}`:'';
@@ -420,7 +421,7 @@ function createBackupSlot(name) {
             schedules:d.schedules,
             characters:d.characters,
             loreEntries:d.loreEntries,
-            currentDT:S().currentDT
+            currentDT:CD().currentDT
         })),savedAt:Date.now()};
     d.backupSlots.unshift(slot);
     if(d.backupSlots.length>10)d.backupSlots=d.backupSlots.slice(0,10);
@@ -431,12 +432,12 @@ function restoreBackupSlot(id) {
     if(slot.data.schedules)  d.schedules=JSON.parse(JSON.stringify(slot.data.schedules));
     if(slot.data.characters) d.characters=JSON.parse(JSON.stringify(slot.data.characters));
     if(slot.data.loreEntries)d.loreEntries=JSON.parse(JSON.stringify(slot.data.loreEntries));
-    if(slot.data.currentDT)  S().currentDT=slot.data.currentDT;
+    if(slot.data.currentDT)  CD().currentDT=slot.data.currentDT;
     sortAndAutoCheck();save();injectContext();return true;
 }
 function deleteBackupSlot(id) { const d=CD();d.backupSlots=d.backupSlots.filter(x=>x.id!==id);save(); }
 function exportToFile() {
-    const s=S(),data={charData:s.charData,currentDT:s.currentDT,exportedAt:Date.now()};
+    const s=S(),data={charData:s.charData,currentDT:CD().currentDT,exportedAt:Date.now()};
     const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
     const url=URL.createObjectURL(blob);
     const a=document.createElement('a');a.href=url;a.download=`rp-planner-${Date.now()}.json`;
@@ -449,14 +450,14 @@ function importFromFile(file) {
             try{
                 const data=JSON.parse(e.target.result);const s=S();
                 if(data.charData)s.charData=data.charData;
-                if(data.currentDT)s.currentDT=data.currentDT;
+                if(data.currentDT)CD().currentDT=data.currentDT;
                 sortAndAutoCheck();save();injectContext();resolve(true);
             }catch(err){reject(err);}
         };
         reader.onerror=reject;reader.readAsText(file);
     });
 }
-function clearAllData() { const s=S();s.charData={};s.currentDT=null;save();injectContext(); }
+function clearAllData() { const s=S();s.charData={};CD().currentDT=null;save();injectContext(); }
 
 // ══════════════════════════════════════════════════════════════
 // UI STATE
@@ -513,7 +514,7 @@ function updateHeaderBtns() {
 // TAB 1: CALENDAR
 // ══════════════════════════════════════════════════════════════
 function renderCalendar() {
-    const s=S(),d=CD(),cur=s.currentDT;
+    const s=S(),d=CD(),cur=CD().currentDT;
     if(!calYear||!calMonth){
         calYear=cur?.year??new Date().getFullYear();
         calMonth=cur?.month??new Date().getMonth()+1;
@@ -588,7 +589,7 @@ function bindCalendarEvents() {
             e.stopPropagation();
             const day=+cell.dataset.day;
             const month=+cell.dataset.month;
-            const year=S().currentDT?.year??calYear;
+            const year=CD().currentDT?.year??calYear;
             schedViewDate={month,day,year};
             switchTab('schedule');
         });
@@ -605,7 +606,7 @@ function getScheduleDates() {
 }
 
 function renderSchedule() {
-    const d=CD(),s=S(),cur=s.currentDT,dates=getScheduleDates();
+    const d=CD(),s=S(),cur=CD().currentDT,dates=getScheduleDates();
     if(!schedViewDate&&dates.length){
         const future=dates.filter(x=>!isPast(x,cur));
         schedViewDate=future.length?future[0]:dates[dates.length-1];
@@ -682,7 +683,7 @@ function renderSchedule() {
 }
 
 function renderAllList() {
-    const d=CD(),s=S(),cur=s.currentDT,dates=getScheduleDates();
+    const d=CD(),s=S(),cur=CD().currentDT,dates=getScheduleDates();
     if(!dates.length)return '<div class="rpp-empty">No schedules</div>';
     return dates.map(dt=>{
         const items=d.schedules.filter(x=>x.month===dt.month&&x.day===dt.day);
@@ -894,7 +895,6 @@ function renderSettings() {
   <div class="rpp-es-section">
     <div class="rpp-es-title">🎨 테마</div>
     <div class="rpp-es-row">
-      <span class="rpp-es-label">다크 모드</span>
       <button id="rpp-theme-toggle" class="rpp-btn rpp-btn-xs ${s.darkMode?'active-sync':''}">
         ${s.darkMode?'🌙 Dark':'☀️ Light'}
       </button>
@@ -903,7 +903,7 @@ function renderSettings() {
   <div class="rpp-es-section">
     <div class="rpp-es-title">🕐 날짜 동기화</div>
     <div class="cal-dt-display" style="margin-bottom:10px">
-      ${S().currentDT?`<div class="cal-dt-date">${fmtDate(S().currentDT)} <span class="cal-dt-day">${fmtDayName(S().currentDT)}</span></div>${fmtTime(S().currentDT)?`<div class="cal-dt-time">${fmtTime(S().currentDT)}</div>`:''}`:
+      ${CD().currentDT?`<div class="cal-dt-date">${fmtDate(CD().currentDT)} <span class="cal-dt-day">${fmtDayName(CD().currentDT)}</span></div>${fmtTime(CD().currentDT)?`<div class="cal-dt-time">${fmtTime(CD().currentDT)}</div>`:''}`:
       '<div class="cal-dt-unset">날짜 미설정</div>'}
     </div>
     <div class="sync-mode-btns">
@@ -934,7 +934,7 @@ function renderSettings() {
   </div>
   <div class="rpp-es-section">
     <div class="rpp-es-title">🔗 연결 프로필 (AI 파싱용)</div>
-    <select id="rpp-es-profile" class="rpp-es-select"><option value="">선택 안 함</option>${profileOpts}</select>
+    <select id="rpp-es-profile" class="rpp-es-select" style="width:100%;max-width:100%;box-sizing:border-box"><option value="">선택 안 함</option>${profileOpts}</select>
   </div>
   <div class="rpp-es-section">
     <div class="rpp-es-title">📤 롤플 반영</div>
@@ -990,8 +990,8 @@ function bindSettingsEvents() {
         const month=parseInt(document.getElementById('mdt-month').value);
         const day=parseInt(document.getElementById('mdt-day').value);
         if(!month||!day){toast('월/일은 필수입니다',true);return;}
-        const prev=s.currentDT;
-        s.currentDT={year,month,day,hour:prev?.hour??null,minute:prev?.minute??null,season:prev?.season??null};
+        const prev=CD().currentDT;
+        CD().currentDT={year,month,day,hour:prev?.hour??null,minute:prev?.minute??null,season:prev?.season??null};
         calYear=year??calYear;calMonth=month;
         sortAndAutoCheck();save();injectContext();switchTab('settings');toast('날짜 설정 완료');
     });
@@ -1116,7 +1116,7 @@ function openPanel() {
     panelOpen=true;
     applyTheme();
     // 현재 RP 날짜로 달력 초기화
-    const cur=S().currentDT;
+    const cur=CD().currentDT;
     if(cur){calYear=cur.year??new Date().getFullYear();calMonth=cur.month;}
     switchTab('calendar');
 
