@@ -1257,9 +1257,15 @@ function bindSettingsEvents() {
     });
 
     // depth
-    document.getElementById('rpp-es-depth')?.addEventListener('change',e=>{
-        e.stopPropagation();s.injectDepth=parseInt(e.target.value)||2;save();injectContext();
-    });
+    document.getElementById('rpp-es-depth')?.addEventListener('input', e => {
+    e.stopPropagation();
+    const val = parseInt(e.target.value);
+    if (!isNaN(val)) {
+        s.injectDepth = val;
+        save();
+        injectContext();
+    }
+});
 
     // 백업 슬롯 생성
     document.getElementById('backup-create-btn')?.addEventListener('click',e=>{
