@@ -1001,7 +1001,7 @@ function bindCharacterEvents() {
 }
 
 // ══════════════════════════════════════════════════════════════
-// TAB 4: LORE
+// TAB 4: LORE (형식 유지 + 버튼 가려짐 및 삭제 버그 수정본)
 // ══════════════════════════════════════════════════════════════
 function renderLore() {
     const d=CD();
@@ -1010,8 +1010,8 @@ function renderLore() {
     d.loreEntries.forEach(e=>{
         html+=`<div class="lore-card" data-id="${e.id}">
           <div class="lore-card-header">
-            <input type="text" class="rpp-inp lore-title-inp" data-id="${e.id}" value="${esc(e.title)}" placeholder="Title" style="flex:1">
-            <button class="lore-del-btn rpp-btn rpp-btn-xs" data-id="${e.id}">Delete</button>
+            <input type="text" class="rpp-inp lore-title-inp" data-id="${e.id}" value="${esc(e.title)}" placeholder="Title">
+            <button class="lore-del-btn rpp-btn rpp-btn-xs" data-id="${e.id}" style="flex-shrink:0;">Delete</button>
           </div>
           <textarea class="rpp-textarea lore-content" data-id="${e.id}" placeholder="Content...">${esc(e.content)}</textarea>
           <div class="lore-card-footer">
@@ -1023,8 +1023,8 @@ function renderLore() {
     return `<div class="rpp-lore-wrap">
       <div class="chr-context-label">📌 ${esc(charName)}</div>
       <div class="lore-top-bar">
-        <input id="lore-new-title" type="text" class="rpp-inp" placeholder="Title" style="flex:1">
-        <button class="rpp-btn rpp-btn-primary rpp-btn-xs" id="lore-add-btn">Add</button>
+        <input id="lore-new-title" type="text" class="rpp-inp" placeholder="Title" style="flex:1; min-width:0;">
+        <button class="rpp-btn rpp-btn-primary rpp-btn-xs" id="lore-add-btn" style="flex-shrink:0;">Add</button>
       </div>
       <div id="lore-list">${html}</div>
     </div>`;
@@ -1037,10 +1037,32 @@ function bindLoreEvents() {
         addLore(title,'');document.getElementById('lore-new-title').value='';switchTab('lore');toast('Entry added');
     });
     document.getElementById('lore-new-title')?.addEventListener('keydown',e=>{if(e.key==='Enter'){e.stopPropagation();document.getElementById('lore-add-btn')?.click();}});
+    
     document.getElementById('lore-list')?.addEventListener('click',e=>{
         e.stopPropagation();
+        
+        // 1. Delete 버튼 클릭 시 (삭제 비동기 씹힘 버그 해결)
         const del=e.target.closest('.lore-del-btn');
-        if(del){removeLore(del.dataset.id);switchTab('lore');toast('Deleted');return;}
+        if(del){
+            const id = del.dataset.id;
+            // 눈앞의 카드를 먼저 즉시 지워주고
+            del.closest('.lore-card')?.remove();
+            
+            // 실리태번이 데이터를 파기할 시간을 0.05초 준 뒤 화면을 새로고침
+            setTimeout(async () => {
+                try {
+                    await removeLore(id);
+                    switchTab('lore');
+                    toast('Deleted');
+                } catch(err) {
+                    console.error('[RPPlanner] Lore 삭제 에러:', err);
+                    switchTab('lore');
+                }
+            }, 50);
+            return;
+        }
+        
+        // 2. Save 버튼 클릭 시 (기존 로직 완벽 유지)
         const sv=e.target.closest('.lore-save-btn');
         if(sv){
             const id=sv.dataset.id;
