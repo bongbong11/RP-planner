@@ -231,52 +231,112 @@ function injectContext() {
 }
 
 // ─── 전체 채팅 파싱 ──────────────────────────────────────────
-function parseAllMessages() {
-    const c=getCtx();
-    const chat=c.chat;
-    if(!chat?.length)return{dateUpdated:false,added:0};
-    const aiMsgs=[...chat].filter(m=>!m.is_user);
-    if(!aiMsgs.length)return{dateUpdated:false,added:0};
-    const s=S(),d=CD();
-    let dateUpdated=false,added=0;
-    // 날짜는 마지막 AI 메시지 기준
-    const lastAI=aiMsgs[aiMsgs.length-1];
-    const dt=parseInfoBlock(lastAI.mes||'');
-    if(dt){s.currentDT=dt;dateUpdated=true;}
-    // 스케쥴은 전체 스캔
-    for(const msg of aiMsgs){
-        const found=parseSchedulesFromText(msg.mes||'',s.currentDT);
-        for(const f of found){
-            if(!d.schedules.some(x=>x.month===f.month&&x.day===f.day&&x.title===f.title)){
-                d.schedules.push({id:uid(),month:f.month,day:f.day,year:null,title:f.title,note:'',done:false,source:'auto',createdAt:Date.now()});
-                added++;
+function parseSchedulesFromText(text, currentDT) {
+    const results = [];
+    if (!text) return results;
+
+    const baseYear = currentDT?.year || 2027; // 오씨 내용에 2027년 명시되어 있으므로 타임라인 기준 우선
+    const textLower = text.toLowerCase();
+
+    const monthsMap = {
+        jan:1, january:1, feb:2, february:2, mar:3, march:3, apr:4, april:4,
+        may:5, jun:6, june:6, jul:7, july:7, aug:8, august:8, sep:9, september:9,
+        oct:10, october:10, nov:11, november:11, dec:12, december:12
+    };
+
+    // ─── [보정 패턴 1] 기간형 날짜 처리 (예: May 2-4 또는 June 26 – July 22) ───
+    // 이 패턴은 월을 넘나들거나 일주일씩 지속되는 오프시즌 브레이크, 미니캠프를 통째로 잡아냅니다.
+    const rangeRegex = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})\s*(?:-|–|~|to)\s*(?:(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+)?(\d{1,2})\b(?:\s*[:-—|,\s])\s*([^\n|.]+)/gi;
+    let rMatch;
+
+    while ((rMatch = rangeRegex.exec(text)) !== null) {
+        const startMonthStr = rMatch[1].toLowerCase();
+        const startDay = parseInt(rMatch[2]);
+        const endMonthStr = rMatch[3] ? rMatch[3].toLowerCase() : startMonthStr;
+        const endDay = parseInt(rMatch[4]);
+        const rawTitle = rMatch[5];
+
+        const cleanTitleText = cleanEnglishTitle(rawTitle);
+        if (cleanTitleText) {
+            const startMonth = monthsMap[startMonthStr];
+            const endMonth = monthsMap[endMonthStr];
+
+            // 자바스크립트 Date를 이용해 시작일부터 종료일까지 하루씩 증가시키며 배열에 추가
+            let startDate = new Date(baseYear, startMonth - 1, startDay);
+            let endDate = new Date(baseYear, endMonth - 1, endDay);
+
+            while (startDate <= endDate) {
+                results.push({
+                    year: startDate.getFullYear(),
+                    month: startDate.getMonth() + 1,
+                    day: startDate.getDate(),
+                    title: cleanTitleText
+                });
+                startDate.setDate(startDate.getDate() + 1); // 하루 증가
             }
         }
     }
-    if(dateUpdated||added){sortAndAutoCheck();save();injectContext();}
-    return{dateUpdated,added};
-}
 
-function parseLastOnly() {
-    const c=getCtx();
-    const chat=c.chat;
-    if(!chat?.length)return{dateUpdated:false,added:0};
-    const lastAI=[...chat].reverse().find(m=>!m.is_user);
-    if(!lastAI)return{dateUpdated:false,added:0};
-    const text=lastAI.mes||'';
-    const s=S(),d=CD();
-    const dt=parseInfoBlock(text);
-    let dateUpdated=false,added=0;
-    if(dt){s.currentDT=dt;dateUpdated=true;}
-    const found=parseSchedulesFromText(text,s.currentDT);
-    for(const f of found){
-        if(!d.schedules.some(x=>x.month===f.month&&x.day===f.day&&x.title===f.title)){
-            d.schedules.push({id:uid(),month:f.month,day:f.day,year:null,title:f.title,note:'',done:false,source:'auto',createdAt:Date.now()});
-            added++;
+    // ─── [보정 패턴 2] 단일 날짜 처리 (이미 기간형으로 긁어간 데이터는 정규식에서 제외되도록 세팅) ───
+    // 예: May 5 — Off day / physicals follow-up
+    const singleDateRegex = /\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b(?:\s*[:-—|,\s])\s*([^\n|.]+)/gi;
+    let sMatch;
+
+    while ((sMatch = singleDateRegex.exec(text)) !== null) {
+        // 이미 대시(-)나 범위 기호가 뒤에 붙어있다면 패턴1에서 처리했으므로 패스
+        if (sMatch.0.match(/(?:-|–|~|to)\s*/)) continue;
+
+        const mStr = sMatch[1].toLowerCase();
+        const month = monthsMap[mStr];
+        const day = parseInt(sMatch[2]);
+        const rawTitle = sMatch[3];
+
+        const clean = cleanEnglishTitle(rawTitle);
+        if (month && day && clean) {
+            results.push({ year: baseYear, month: month, day: day, title: clean });
         }
     }
-    if(dateUpdated||added){sortAndAutoCheck();save();injectContext();}
-    return{dateUpdated,added};
+
+    // ─── [보정 패턴 3] 구어체 상대 날짜 (tomorrow 등) ───
+    const baseMonth = currentDT?.month || (new Date().getMonth() + 1);
+    const baseDay = currentDT?.day || new Date().getDate();
+    
+    if (textLower.includes('tomorrow')) {
+        const regex = /tomorrow(?:[^a-zA-Z0-9]*)(?:we\s+need\s+to|let's|starts)?\s*([^(\n.,!?~]+)/i;
+        const match = regex.exec(text);
+        if (match) {
+            const clean = cleanEnglishTitle(match[1]);
+            if (clean) {
+                const tDate = new Date(baseYear, baseMonth - 1, baseDay + 1);
+                results.push({
+                    year: tDate.getFullYear(),
+                    month: tDate.getMonth() + 1,
+                    day: tDate.getDate(),
+                    title: clean
+                });
+            }
+        }
+    }
+
+    return results;
+}
+
+function cleanEnglishTitle(title) {
+    let t = title.trim();
+    // 괄호 안에 들어간 잔여 날짜 정보 제거 (예: "(May 2)" 또는 "(Pittsburgh facility)")
+    t = t.replace(/\s*\([^)]*\)/g, '');
+    t = t.replace(/\|.*/, '').replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?"']/g, "").trim();
+
+    const junkPrefixes = [
+        /^(?:we\s+should\s+)/i, /^(?:we\s+need\s+to\s+)/i, /^(?:let's\s+)/i,
+        /^(?:i\s+will\s+)/i, /^(?:we\s+are\s+going\s+to\s+)/i, /^(?:there\s+is\s+a\s+)/i,
+        /^(?:have\s+a\s+)/i, /^(?:on\s+)/i, /^(?:continued\s+)/i
+    ];
+    for (const regex of junkPrefixes) { t = t.replace(regex, ''); }
+    
+    if (t.length > 0) t = t.charAt(0).toUpperCase() + t.slice(1);
+    if (t.length < 3 || /^(And|The|With|For|But)$/i.test(t)) return null;
+    return t;
 }
 
 // ─── 백업 ────────────────────────────────────────────────────
