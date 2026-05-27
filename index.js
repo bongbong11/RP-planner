@@ -1,4 +1,4 @@
-// RP Planner v5.2 — SillyTavern Extension (Production / Streaming-Safe)
+// RP Planner v5 — SillyTavern Extension
 
 import { event_types } from '../../../events.js';
 
@@ -7,23 +7,12 @@ const INJECT_KEY = 'rp-planner-inject';
 const LOG        = '[RPPlanner]';
 
 let ctx = null;
-let lastParsedMesId = null;             
-let processedMessageIds = new Set();    // 💡 메모리 오버플로우 방지 락 탑재 예정
-
 function getCtx() { if(!ctx) ctx=SillyTavern.getContext(); return ctx; }
-
-// ─── 1. 안전한 호환성 클론 유틸 ────────────────────────────────────
-function clone(obj) {
-    if (typeof structuredClone === 'function') {
-        try { return structuredClone(obj); } catch (e) { /* fallback */ }
-    }
-    return JSON.parse(JSON.stringify(obj));
-}
 
 // ─── 캐릭터별 데이터 키 ──────────────────────────────────────
 function getCurrentCharName() {
     const c=getCtx();
-    const aiMsg=[...(c.chat||[])].reverse().find(m=>m && !m.is_user);
+    const aiMsg=[...( c.chat||[])].reverse().find(m=>!m.is_user);
     return aiMsg?.name||'global';
 }
 
@@ -44,15 +33,15 @@ const GLOBAL_DEFAULTS = {
     syncPattern:   'Date: YYYY.MM.DD',
     injectEnabled: true,
     injectDepth:   2,
-    maxUpcoming:   20,
-    maxPast:       10,
+    maxUpcoming:   20,   // 예정 일정 최대 표시 개수
+    maxPast:       10,   // 지난 일정 최대 표시 개수
     backupSlots:   [],
     charData:      {},
 };
 
 function S() {
     const c=getCtx();
-    if(!c.extensionSettings[EXT]) c.extensionSettings[EXT]=clone(GLOBAL_DEFAULTS);
+    if(!c.extensionSettings[EXT]) c.extensionSettings[EXT]=structuredClone(GLOBAL_DEFAULTS);
     const d=c.extensionSettings[EXT];
     if(!d.charData)      d.charData={};
     if(!d.backupSlots)   d.backupSlots=[];
@@ -65,10 +54,11 @@ function S() {
 
 function CD() {
     const s=S(), k=charKey();
-    if(!s.charData[k]) s.charData[k]=clone(CHAR_DEFAULTS);
+    if(!s.charData[k]) s.charData[k]=structuredClone(CHAR_DEFAULTS);
     const d=s.charData[k];
     if(!d.characters)  d.characters=[];
     if(!d.loreEntries) d.loreEntries=[];
+    // 현재 캐릭터 카드 자동 생성
     if(d.characters.length===0){
         const c=getCtx();
         const char=c.characters?.[c.characterId];
@@ -87,14 +77,14 @@ function save() { getCtx().saveSettingsDebounced(); }
 function uid()  { return Date.now().toString(36)+Math.random().toString(36).slice(2,5); }
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
-function cmpDate(a, b, defaultYear = 2027) {
-    const ay = Number(a.year ?? b.year ?? defaultYear);
-    const by = Number(b.year ?? a.year ?? defaultYear);
-    if (ay !== by) return ay - by;
-    if (Number(a.month) !== Number(b.month)) return Number(a.month) - Number(b.month);
-    return Number(a.day) - Number(b.day);
+function cmpDate(a,b) {
+    const ay=a.year??0,by=b.year??0;
+    if(ay!==by)return ay-by;
+    if(a.month!==b.month)return a.month-b.month;
+    return a.day-b.day;
 }
-function isPast(s, cur)  { return cur ? cmpDate(s, cur, cur.year) < 0 : false; }
+function isPast(s,cur)  { return cur?cmpDate(s,cur)<0:false; }
+function isToday(s,cur) { return cur?cmpDate(s,cur)===0:false; }
 
 function fmtDate(d) {
     if(!d)return '—';
@@ -107,12 +97,11 @@ function fmtTime(d) {
     const h=d.hour%12||12;
     return `${String(h).padStart(2,'0')}:${String(d.minute??0).padStart(2,'0')} ${ampm}`;
 }
-
 function fmtDayName(d) {
-    if(!d) return '';
-    const days = ['SUN','MON','TUE','WED','THU','FRI','SAT'];
-    const date = new Date(Date.UTC(Number(d.year ?? 2027), Number(d.month) - 1, Number(d.day)));
-    return days[date.getUTCDay()];
+    if(!d)return '';
+    const days=['SUN','MON','TUE','WED','THU','FRI','SAT'];
+    const date=new Date(d.year??2000,d.month-1,d.day);
+    return days[date.getDay()];
 }
 
 // ─── 인포블럭 파싱 ───────────────────────────────────────────
@@ -126,171 +115,62 @@ function parseInfoBlock(text) {
     return r;
 }
 
-// ─── 3 & 5. 텍스트 스케쥴 파싱 (컨텍스트 범위 엄격화 및 정규식 Pipe 버그 전면 수정) ───
-function parseSchedulesFromText(text, currentDT) {
-    const results = [];
-    if (!text) return results;
-
-    const baseYear = currentDT?.year || 2027; 
-    const monthsMap = {
-        jan:1, january:1, feb:2, february:2, mar:3, march:3, apr:4, april:4,
-        may:5, jun:6, june:6, jul:7, july:7, aug:8, august:8, sep:9, september:9,
-        oct:10, october:10, nov:11, november:11, dec:12, december:12
-    };
-
-    // 💡 3. 서사문 혼입을 차단하는 고강도 명시적 기획 단어 그룹 고정
-    const isPlanningContext = /(?:schedule|calendar|appointment|meeting|reservation|deadline|due|remind|일정|예약|회의|마감)/i.test(text);
-    if (!isPlanningContext) return results;
-
-    // 💡 5. 정규식 내부 대괄호 리터럴 파이프(|) 버그 전면 청소 완료
-    // 패턴 1: 영어 기간형 일정
-    const rangeRegex = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})\s*(?:\s|—|-|–|~|to)\s*(?:(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+)?(\d{1,2})\b(?:\s|—|-|–|:|•)+\s*([A-Za-z0-9\s가-힣\(\),\/\s'.\-]{2,60})/gi;
-    let rMatch;
-
-    while ((rMatch = rangeRegex.exec(text)) !== null) {
-        const startMonthStr = rMatch[1].toLowerCase();
-        const startDay = parseInt(rMatch[2]);
-        const endMonthStr = rMatch[3] ? rMatch[3].toLowerCase() : startMonthStr;
-        const endDay = parseInt(rMatch[4]);
-        const rawTitle = rMatch[5];
-
-        const cleanTitleText = cleanEnglishTitle(rawTitle);
-        if (cleanTitleText) {
-            const startMonth = monthsMap[startMonthStr];
-            const endMonth = monthsMap[endMonthStr];
-            if (!startMonth || !endMonth) continue;
-
-            let startDate = new Date(Date.UTC(baseYear, startMonth - 1, startDay));
-            let endDate = new Date(Date.UTC(baseYear, endMonth - 1, endDay));
-
-            while (startDate <= endDate) {
-                results.push({
-                    year: startDate.getUTCFullYear(),
-                    month: startDate.getUTCMonth() + 1,
-                    day: startDate.getUTCDate(),
-                    title: cleanTitleText
-                });
-                startDate.setUTCDate(startDate.getUTCDate() + 1);
-            }
+function parseSchedulesFromText(text,cur) {
+    const found=[],seen=new Set();
+    // 한국어
+    const koRe=/(\d{1,2})월\s*(\d{1,2})일[에는]?\s*[,：:—\-]?\s*([^\n。.]{3,50})/g;
+    let m;
+    while((m=koRe.exec(text))!==null){
+        const mo=+m[1],d=+m[2];
+        const title=m[3].trim().replace(/[。.,\s]+$/,'').replace(/^\*+\s*[—\-]\s*/,'');
+        if(title.length<2)continue;
+        const k=`${mo}-${d}-${title}`;
+        if(!seen.has(k)){seen.add(k);found.push({month:mo,day:d,title});}
+    }
+    // 영어 월
+    const months={january:1,february:2,march:3,april:4,may:5,june:6,july:7,august:8,september:9,october:10,november:11,december:12,jan:1,feb:2,mar:3,apr:4,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
+    const enRe=/(?:\*{0,2}~?)\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\.?\s+(\d{1,2})(?:[–\-]\d{1,2})?(?:st|nd|rd|th)?(?:\s*\(approx[^)]*\))?(?:\*{0,2})?\s*[:\-—]+\s*(?:\*{0,2})([^\n*✅⚠️]{2,80})/gi;
+    while((m=enRe.exec(text))!==null){
+        const mo=months[m[1].toLowerCase()],d=+m[2];
+        const title=m[3].trim().replace(/[.,\s]+$/,'').replace(/^\*+\s*[—\-]\s*/,'');
+        if(!title||title.length<2)continue;
+        const k=`${mo}-${d}-${title}`;
+        if(!seen.has(k)){seen.add(k);found.push({month:mo,day:d,title});}
+    }
+    // 상대날짜
+    if(cur){
+        const relMap={'오늘':0,'내일':1,'모레':2,'내일모레':2,'어제':-1,today:0,tomorrow:1,yesterday:-1};
+        const relRe=/\b(오늘|내일모레|내일|모레|어제|today|tomorrow|yesterday)\b[에는]?\s*[,：:—\-]?\s*([^\n。.]{3,40})/gi;
+        while((m=relRe.exec(text))!==null){
+            const offset=relMap[m[1].toLowerCase()]??0;
+            const title=m[2].trim().replace(/[.,\s]+$/,'');
+            if(title.length<2)continue;
+            const nd=cur.day+offset;
+            const k=`${cur.month}-${nd}-${title}`;
+            if(!seen.has(k)){seen.add(k);found.push({month:cur.month,day:nd,title});}
         }
     }
-
-    // 패턴 2: 영어 단일 날짜
-    const singleDateRegex = /\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b(?:\s|—|-|–|:|•)+\s*([A-Za-z0-9\s가-힣\(\),\/\s'.\-]{2,60})/gi;
-    let sMatch;
-
-    while ((sMatch = singleDateRegex.exec(text)) !== null) {
-        if (sMatch[0].match(/(?:-|–|~|to)\s*\d+/)) continue;
-
-        const mStr = sMatch[1].toLowerCase();
-        const month = monthsMap[mStr];
-        const day = parseInt(sMatch[2]);
-        const rawTitle = sMatch[3];
-
-        const clean = cleanEnglishTitle(rawTitle);
-        if (month && day && clean) {
-            results.push({ year: baseYear, month: month, day: day, title: clean });
-        }
-    }
-
-    // 패턴 3: 한국어 날짜 일정
-    const koRegex = /\b(\d{1,2})월\s*(\d{1,2})일(?:\s|—|-|–|:|•)+\s*([A-Za-z0-9\s가-힣\(\),\/\s'.\-]{2,60})/g;
-    let kMatch;
-    while ((kMatch = koRegex.exec(text)) !== null) {
-        const month = parseInt(kMatch[1]);
-        const day = parseInt(kMatch[2]);
-        const clean = cleanEnglishTitle(kMatch[3]);
-        if (month && day && clean) {
-            results.push({ year: baseYear, month: month, day: day, title: clean });
-        }
-    }
-
-    return results;
+    return found;
 }
 
-// ─── 4. 구조적 타이틀 필터 기법 (유지보수가 불가능한 동사 블랙리스트 완전 폐기) ─────
-function cleanEnglishTitle(title) {
-    if (!title) return null;
-    let t = title.trim();
-    
-    t = t.replace(/[|\[\]]/g, "").trim();
-
-    // 💡 서사적 문장 종결(마침표 등)이 있거나 단어가 5개를 초과하면 스케줄 제목이 아닌 서사 지문으로 판단
-    if (/[.!?]/.test(t)) return null;
-    if (t.split(/\s+/).length > 5) return null; 
-
-    if (t.length < 2 || t.length > 50) return null;
-    return t.charAt(0).toUpperCase() + t.slice(1);
-}
-
-// ─── 추출된 스케쥴 배열 가공 및 검증 처리 ────────────────────────────────────
-function processExtractedSchedules(foundList, currentDT, sourceMode = 'auto') {
-    const d = CD();
-    let added = 0;
-    const baseYear = Number(currentDT?.year || S().currentDT?.year || 2027);
-
-    for (const f of foundList) {
-        const targetYear = f.year ? Number(f.year) : baseYear;
-        const targetMonth = Number(f.month);
-        const targetDay = Number(f.day);
-        const targetTitle = f.title.trim();
-
-        const isDuplicate = d.schedules.some(x => 
-            Number(x.year ?? baseYear) === targetYear && 
-            Number(x.month) === targetMonth && 
-            Number(x.day) === targetDay && 
-            x.title.trim() === targetTitle
-        );
-
-        if (!isDuplicate) {
-            d.schedules.push({
-                id: uid(),
-                year: targetYear,        
-                month: targetMonth,      
-                day: targetDay,          
-                title: targetTitle,
-                note: f.note || '',
-                done: false,
-                source: sourceMode,
-                createdAt: Date.now()
-            });
-            added++;
-        }
-    }
-    return added;
-}
-
+// ─── 스케쥴 CRUD ─────────────────────────────────────────────
 function sortAndAutoCheck() {
-    const d = CD(), cur = S().currentDT;
-    const defaultYear = cur?.year ?? 2027;
-    d.schedules.sort((a, b) => cmpDate(a, b, defaultYear));
-    if (cur) {
-        d.schedules.forEach(x => {
-            if (isPast(x, cur)) { x.isExpired = true; } 
-        });
-    }
+    const d=CD(),cur=S().currentDT;
+    d.schedules.sort(cmpDate);
+    if(cur)d.schedules.forEach(x=>{if(!x.done&&isPast(x,cur))x.done=true;});
 }
-function addSchedule({month, day, year=null, title, note='', source='manual'}) {
-    const baseYear = year ? Number(year) : Number(S().currentDT?.year || 2027);
-    CD().schedules.push({
-        id: uid(), 
-        month: Number(month), 
-        day: Number(day), 
-        year: baseYear, 
-        title: title.trim(), 
-        note: note.trim(), 
-        done: false, 
-        source, 
-        createdAt: Date.now()
-    });
-    sortAndAutoCheck(); save(); injectContext();
+function addSchedule({month,day,year=null,title,note='',source='manual'}) {
+    CD().schedules.push({id:uid(),month:+month,day:+day,year:year?+year:null,title:title.trim(),note:note.trim(),done:false,source,createdAt:Date.now()});
+    sortAndAutoCheck();save();injectContext();
 }
 function removeSchedule(id) { const d=CD();d.schedules=d.schedules.filter(x=>x.id!==id);save();injectContext(); }
 function toggleDone(id)     { const d=CD();const x=d.schedules.find(x=>x.id===id);if(x){x.done=!x.done;save();injectContext();} }
 
-// ─── 캐릭터 / 로어 CRUD ─────────────────────────────────────────────
+// ─── 캐릭터 CRUD ─────────────────────────────────────────────
 function addCharacter(name) { CD().characters.push({id:uid(),name:name.trim(),fields:[{key:'',val:''}]});save();injectContext(); }
 function removeCharacter(id){ const d=CD();d.characters=d.characters.filter(x=>x.id!==id);save();injectContext(); }
+
+// ─── 로어 CRUD ───────────────────────────────────────────────
 function addLore(title,content='') { CD().loreEntries.push({id:uid(),title:title.trim(),content:content.trim()});save();injectContext(); }
 function removeLore(id)            { const d=CD();d.loreEntries=d.loreEntries.filter(x=>x.id!==id);save();injectContext(); }
 function updateLore(id,title,content) {
@@ -298,7 +178,7 @@ function updateLore(id,title,content) {
     if(e){e.title=title;e.content=content;save();injectContext();}
 }
 
-// ─── 6. 줄(Line) 단위 안전 결합 구조 및 캡핑 알고리즘 (문법 파괴 완전 방어) ───────
+// ─── Context 주입 ─────────────────────────────────────────────
 function buildInjectText() {
     const s=S(),d=CD(),cur=s.currentDT,lines=[];
     if(cur){
@@ -318,30 +198,18 @@ function buildInjectText() {
         past.forEach(x=>{const note=x.note?` (${x.note})`:'';lines.push(`  - ${x.month}/${x.day}: ${x.title}${note} — completed`);});
         lines.push(']');
     }
-    d.characters.slice(0, 5).forEach(c=>{ 
+    d.characters.forEach(c=>{
         if(!c.name)return;
-        const fl=c.fields.filter(f=>f.key&&f.val).slice(0, 10).map(f=>`  ${f.key}: ${f.val}`);
+        const fl=c.fields.filter(f=>f.key&&f.val).map(f=>`  ${f.key}: ${f.val}`);
         if(fl.length){lines.push(`[Character — ${c.name}:`);lines.push(...fl);lines.push(']');}
     });
-    d.loreEntries.slice(0, 10).forEach(e=>{ 
+    d.loreEntries.forEach(e=>{
         if(!e.title&&!e.content)return;
         lines.push(`[${e.title||'Note'}:`);
-        e.content.split('\n').slice(0, 15).forEach(l=>{if(l.trim())lines.push(`  ${l.trim()}`);});
+        e.content.split('\n').forEach(l=>{if(l.trim())lines.push(`  ${l.trim()}`);});
         lines.push(']');
     });
-
-    // 💡 6. 라인 단위로 길이를 측정하며 적재하여 대괄호나 로어 블록 중간이 반토막 나는 현상 방지
-    let totalLength = 0;
-    const safeLines = [];
-    for (const line of lines) {
-        if (totalLength + line.length + 1 > 4000) {
-            safeLines.push("...[Context Cap Truncated Cleanly]");
-            break;
-        }
-        safeLines.push(line);
-        totalLength += line.length + 1;
-    }
-    return safeLines.join('\n');
+    return lines.join('\n');
 }
 
 function injectContext() {
@@ -350,114 +218,54 @@ function injectContext() {
     c.setExtensionPrompt?.(INJECT_KEY,buildInjectText(),1,s.injectDepth);
 }
 
-// ─── 1, 2, 8. Rolling Timeline Parser 및 연산 누수 제어 물리 엔진 ──────────────────
+// ─── 전체 채팅 파싱 ──────────────────────────────────────────
 function parseAllMessages() {
-    const c = getCtx(); const chat = c.chat;
-    if (!chat?.length) return { dateUpdated: false, added: 0 };
-    const aiMsgs = [...chat].filter(m => m && !m.is_user);
-    if (!aiMsgs.length) return { dateUpdated: false, added: 0 };
-
-    const s = S(); let dateUpdated = false, added = 0;
-    
-    // 💡 2. 과거 연도 고착 드리프트를 격파하는 무빙 룰링 타임라인 기법 적용
-    let rollingDT = s.currentDT ? clone(s.currentDT) : null;
-    const lastAI = aiMsgs[aiMsgs.length - 1];
-
-    for (const msg of aiMsgs) {
-        if (!msg.mes) continue;
-        
-        // 해당 메시지 시점의 독립 인포블록 추출 및 내부 기준시 이동(Rolling)
-        const msgDT = parseInfoBlock(msg.mes);
-        if (msgDT) {
-            rollingDT = msgDT;
-            if (msg === lastAI) { s.currentDT = msgDT; dateUpdated = true; }
-        }
-
-        // 이미 파싱을 거쳐간 메시지 식별 시 패스
-        if (msg.id && processedMessageIds.has(msg.id)) continue;
-        
-        const found = parseSchedulesFromText(msg.mes, rollingDT);
-        added += processExtractedSchedules(found, rollingDT, 'auto');
-        
-        // 💡 1. [논리 버그 교정] 일정 추출 성공/실패 여부와 상관없이 무조건 캐시에 수용하여 무한 재연산 저지
-        if (msg.id) {
-            processedMessageIds.add(msg.id);
+    const c=getCtx();
+    const chat=c.chat;
+    if(!chat?.length)return{dateUpdated:false,added:0};
+    const aiMsgs=[...chat].filter(m=>!m.is_user);
+    if(!aiMsgs.length)return{dateUpdated:false,added:0};
+    const s=S(),d=CD();
+    let dateUpdated=false,added=0;
+    // 날짜는 마지막 AI 메시지 기준
+    const lastAI=aiMsgs[aiMsgs.length-1];
+    const dt=parseInfoBlock(lastAI.mes||'');
+    if(dt){s.currentDT=dt;dateUpdated=true;}
+    // 스케쥴은 전체 스캔
+    for(const msg of aiMsgs){
+        const found=parseSchedulesFromText(msg.mes||'',s.currentDT);
+        for(const f of found){
+            if(!d.schedules.some(x=>x.month===f.month&&x.day===f.day&&x.title===f.title)){
+                d.schedules.push({id:uid(),month:f.month,day:f.day,year:null,title:f.title,note:'',done:false,source:'auto',createdAt:Date.now()});
+                added++;
+            }
         }
     }
-
-    // 💡 8. [메모리 누수 통제] 상한선 초과 시 구형 캐시 버퍼 정제 안전장치
-    if (processedMessageIds.size > 3000) {
-        processedMessageIds.clear();
-        if (lastAI && lastAI.id) processedMessageIds.add(lastAI.id);
-    }
-
-    if (dateUpdated || added) { sortAndAutoCheck(); save(); injectContext(); }
-    return { dateUpdated, added };
+    if(dateUpdated||added){sortAndAutoCheck();save();injectContext();}
+    return{dateUpdated,added};
 }
 
-// ─── 7. Streaming-Safe 파서 통합 게이트웨이 ─────────────────────────────────
 function parseLastOnly() {
-    const c = getCtx(); const chat = c.chat;
-    if (!chat?.length) return { dateUpdated: false, added: 0 };
-    const lastAI = [...chat].reverse().find(m => m && !m.is_user);
-    if (!lastAI) return { dateUpdated: false, added: 0 };
-
-    // 💡 7. 인공지능이 한창 타이핑(Streaming) 중인 불완전한 상태일 때는 파싱을 보류하여 캐시 먹통 방지
-    if (lastAI.streaming || lastAI.extra?.is_streaming) return { dateUpdated: false, added: 0 };
-
-    if (lastAI.id && lastAI.id === lastParsedMesId) return { dateUpdated: false, added: 0 };
-    lastParsedMesId = lastAI.id;
-
-    const text = lastAI.mes || ''; const s = S();
-    const dt = parseInfoBlock(text); let dateUpdated = false, added = 0;
-    if (dt) { s.currentDT = dt; dateUpdated = true; }
-
-    const found = parseSchedulesFromText(text, s.currentDT);
-    added += processExtractedSchedules(found, s.currentDT, 'auto');
-
-    if (lastAI.id) processedMessageIds.add(lastAI.id);
-
-    if (dateUpdated || added) { sortAndAutoCheck(); save(); injectContext(); }
-    return { dateUpdated, added };
-}
-
-// ─── 실리태번 모듈 확장 프로그램 초기화 ──────────────────────────────────────
-async function initPlanner() {
-    console.log(LOG, "Initializing RP Planner Module...");
-    ctx = SillyTavern.getContext();
-    
-    const eventSource = ctx.eventSource || ctx.events;
-
-    if (eventSource && typeof eventSource.on === 'function') {
-        eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, () => {
-            if (S().syncMode === 'auto') { parseLastOnly(); }
-        });
-        
-        eventSource.on(event_types.CHAT_CHANGED, () => { 
-            processedMessageIds.clear(); 
-            lastParsedMesId = null;
-            parseAllMessages();
-            injectContext(); 
-        });
-    } else {
-        ctx.on?.(event_types.CHARACTER_MESSAGE_RENDERED, () => {
-            if (S().syncMode === 'auto') parseLastOnly();
-        });
-        ctx.on?.(event_types.CHAT_CHANGED, () => {
-            processedMessageIds.clear();
-            lastParsedMesId = null;
-            parseAllMessages();
-            injectContext();
-        });
+    const c=getCtx();
+    const chat=c.chat;
+    if(!chat?.length)return{dateUpdated:false,added:0};
+    const lastAI=[...chat].reverse().find(m=>!m.is_user);
+    if(!lastAI)return{dateUpdated:false,added:0};
+    const text=lastAI.mes||'';
+    const s=S(),d=CD();
+    const dt=parseInfoBlock(text);
+    let dateUpdated=false,added=0;
+    if(dt){s.currentDT=dt;dateUpdated=true;}
+    const found=parseSchedulesFromText(text,s.currentDT);
+    for(const f of found){
+        if(!d.schedules.some(x=>x.month===f.month&&x.day===f.day&&x.title===f.title)){
+            d.schedules.push({id:uid(),month:f.month,day:f.day,year:null,title:f.title,note:'',done:false,source:'auto',createdAt:Date.now()});
+            added++;
+        }
     }
-
-    parseAllMessages();
-    injectContext();
+    if(dateUpdated||added){sortAndAutoCheck();save();injectContext();}
+    return{dateUpdated,added};
 }
-
-$(document).ready(() => {
-    initPlanner();
-});
 
 // ─── 백업 ────────────────────────────────────────────────────
 function createBackupSlot(name) {
