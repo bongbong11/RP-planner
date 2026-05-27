@@ -270,7 +270,7 @@ If no schedules found, return []`;
         if(profileId&&c.ConnectionManagerRequestService){
             response=await c.ConnectionManagerRequestService.sendRequest(
                 profileId,messages,1500,
-                {stream:false,extractData:true,includePreset:false,includeInstruct:false,systemPrompt}
+                {stream:false,extractData:true,includePreset:true,includeInstruct:false,systemPrompt}
             );
         } else {
             // fallback: generateRaw
@@ -429,7 +429,7 @@ Return ONLY JSON array: [{"year":2027,"month":5,"day":3,"dayEnd":5,"title":"Even
         const messages=[{role:'user',content:userContent}];
         const response=await c.ConnectionManagerRequestService.sendRequest(
             profileId, messages, 1000,
-            {stream:false, extractData:true, includePreset:false, includeInstruct:false}
+            {stream:false, extractData:true, includePreset:true, includeInstruct:false}
         );
 
         let raw='';
