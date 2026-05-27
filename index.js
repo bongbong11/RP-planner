@@ -78,11 +78,7 @@ function uid()  { return Date.now().toString(36)+Math.random().toString(36).slic
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 function cmpDate(a,b) {
-    // 동기화된 가상 연도가 있으면 그걸 쓰고, 없으면 실제 올해 연도(2026년 등)를 기본값으로 사용
-    const currentYear = S().currentDT?.year ?? new Date().getFullYear();
-    const ay = a.year ?? currentYear;
-    const by = b.year ?? currentYear;
-    
+    const ay=a.year??0,by=b.year??0;
     if(ay!==by)return ay-by;
     if(a.month!==b.month)return a.month-b.month;
     return a.day-b.day;
@@ -121,17 +117,15 @@ function parseInfoBlock(text) {
 
 function parseSchedulesFromText(text,cur) {
     const found=[],seen=new Set();
-    const yr = cur?.year ?? null; // 현재 설정된 가상 날짜의 연도를 가져옴
-    
     // 한국어
     const koRe=/(\d{1,2})월\s*(\d{1,2})일[에는]?\s*[,：:—\-]?\s*([^\n。.]{3,50})/g;
     let m;
     while((m=koRe.exec(text))!==null){
         const mo=+m[1],d=+m[2];
-        const title=m[3].trim().replace(/[..,\s]+$/,'').replace(/^\*+\s*[—\-]\s*/,'');
+        const title=m[3].trim().replace(/[。.,\s]+$/,'').replace(/^\*+\s*[—\-]\s*/,'');
         if(title.length<2)continue;
-        const k=`${yr ?? 0}-${mo}-${d}-${title}`; // 연도를 고유 키값에 포함
-        if(!seen.has(k)){seen.add(k);found.push({year:yr,month:mo,day:d,title});} // year 추가
+        const k=`${mo}-${d}-${title}`;
+        if(!seen.has(k)){seen.add(k);found.push({month:mo,day:d,title});}
     }
     // 영어 월
     const months={january:1,february:2,march:3,april:4,may:5,june:6,july:7,august:8,september:9,october:10,november:11,december:12,jan:1,feb:2,mar:3,apr:4,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
@@ -140,8 +134,8 @@ function parseSchedulesFromText(text,cur) {
         const mo=months[m[1].toLowerCase()],d=+m[2];
         const title=m[3].trim().replace(/[.,\s]+$/,'').replace(/^\*+\s*[—\-]\s*/,'');
         if(!title||title.length<2)continue;
-        const k=`${yr ?? 0}-${mo}-${d}-${title}`; // 연도를 고유 키값에 포함
-        if(!seen.has(k)){seen.add(k);found.push({year:yr,month:mo,day:d,title});} // year 추가
+        const k=`${mo}-${d}-${title}`;
+        if(!seen.has(k)){seen.add(k);found.push({month:mo,day:d,title});}
     }
     // 상대날짜
     if(cur){
@@ -225,93 +219,52 @@ function injectContext() {
 }
 
 // ─── 전체 채팅 파싱 ──────────────────────────────────────────
-function parseSchedulesFromText(text, cur) {
-    const found = [], seen = new Set();
-    const yr = cur?.year ?? null;
-    
-    // 영어 월 매핑 데이터
-    const months = { january: 1, february: 2, march: 3, april: 4, may: 5, june: 6, july: 7, august: 8, september: 9, october: 10, november: 11, december: 12, jan: 1, feb: 2, mar: 3, apr: 4, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
-    
-    // [정규식 매칭 그룹] 1: 월 이름, 2: 시작일, 3: 종료일(옵션), 4: 구분자 뒤의 전체 내용
-    // 예: "May 2-4 — Rookie minicamp" 또는 "August 15 : Preseason Week 2" 모두 완벽 매칭
-    const enRe = /\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\.?\s+(\d{1,2})(?:\s*[–\-]\s*(\d{1,2}))?(?:st|nd|rd|th)?\s*[:\-—\t]+\s*([^\n]{2,150})/gi;
-    
-    let m;
-    while ((m = enRe.exec(text)) !== null) {
-        const mo = months[m[1].toLowerCase()];
-        const startD = +m[2];
-        const endD = m[3] ? +m[3] : startD; // 2-4일이면 startD=2, endD=4 / 하루짜리면 같음
-        let fullText = m[4].trim().replace(/^[\*\s—\-~]+/, '').replace(/[\*\s.,—\-~]+$/, '');
-        
-        // 소설 대사나 따옴표로 시작하는 지문, 시스템 메시지 찌꺼기 완벽 차단
-        if (!fullText || fullText.length < 2 || fullText.startsWith('"') || fullText.startsWith("'")) continue;
-        const lowerText = fullText.toLowerCase();
-        if (lowerText.startsWith('and ') || lowerText.startsWith('but ') || lowerText.startsWith('is ') || lowerText.includes('overlaps perfectly') || lowerText.includes('requires living')) continue;
-        
-        let title = fullText;
-        let note = '';
-        
-        // [제목 및 내용(노트) 분리 로직]
-        // 1순위 패턴: "Rookie minicamp (Pittsburgh facility)" -> 괄호 분리
-        const braceMatch = fullText.match(/^([^\(]+)\(([^\)]+)\)/);
-        if (braceMatch) {
-            title = braceMatch[1].trim();
-            note = braceMatch[2].trim();
-        } 
-        // 2순위 패턴: "제목 — 내용" 이나 "제목 - 내용" 형태 대시 분리
-        else if (fullText.includes(' — ')) {
-            const parts = fullText.split(' — ');
-            title = parts[0].trim();
-            note = parts.slice(1).join(' — ').trim();
-        } else if (fullText.includes(' - ')) {
-            const parts = fullText.split(' - ');
-            title = parts[0].trim();
-            note = parts.slice(1).join(' - ').trim();
-        }
-        
-        // 중복 체크용 키 세팅 (연도-월-시작일-종료일-제목)
-        const k = `${yr ?? 0}-${mo}-${startD}-${endD}-${title}`;
-        if (!seen.has(k)) {
-            seen.add(k);
-            found.push({
-                year: yr,
-                month: mo,
-                day: startD,
-                endDay: endD,
-                title: title,
-                note: note
-            });
-        }
-    }
-    
-    // 상대 날짜 영어 버전 (Today, Tomorrow, Yesterday 등 아웃풋 대응)
-    if (cur) {
-        const relMap = { today: 0, tomorrow: 1, yesterday: -1 };
-        const relRe = /\b(today|tomorrow|yesterday)\b\s*[:\-—]?\s*([^\n。.]{3,50})/gi;
-        while ((m = relRe.exec(text)) !== null) {
-            const offset = relMap[m[1].toLowerCase()] ?? 0;
-            let fullText = m[2].trim();
-            if (fullText.length < 2 || fullText.startsWith('"')) continue;
-            
-            let title = fullText;
-            let note = '';
-            
-            const braceMatch = fullText.match(/^([^\(]+)\(([^\)]+)\)/);
-            if (braceMatch) {
-                title = braceMatch[1].trim();
-                note = braceMatch[2].trim();
-            }
-            
-            const nd = cur.day + offset;
-            const k = `${yr ?? 0}-${cur.month}-${nd}-${nd}-${title}`;
-            if (!seen.has(k)) {
-                seen.add(k);
-                found.push({ year: yr, month: cur.month, day: nd, endDay: nd, title, note });
+function parseAllMessages() {
+    const c=getCtx();
+    const chat=c.chat;
+    if(!chat?.length)return{dateUpdated:false,added:0};
+    const aiMsgs=[...chat].filter(m=>!m.is_user);
+    if(!aiMsgs.length)return{dateUpdated:false,added:0};
+    const s=S(),d=CD();
+    let dateUpdated=false,added=0;
+    // 날짜는 마지막 AI 메시지 기준
+    const lastAI=aiMsgs[aiMsgs.length-1];
+    const dt=parseInfoBlock(lastAI.mes||'');
+    if(dt){s.currentDT=dt;dateUpdated=true;}
+    // 스케쥴은 전체 스캔
+    for(const msg of aiMsgs){
+        const found=parseSchedulesFromText(msg.mes||'',s.currentDT);
+        for(const f of found){
+            if(!d.schedules.some(x=>x.month===f.month&&x.day===f.day&&x.title===f.title)){
+                d.schedules.push({id:uid(),month:f.month,day:f.day,year:null,title:f.title,note:'',done:false,source:'auto',createdAt:Date.now()});
+                added++;
             }
         }
     }
-    
-    return found;
+    if(dateUpdated||added){sortAndAutoCheck();save();injectContext();}
+    return{dateUpdated,added};
+}
+
+function parseLastOnly() {
+    const c=getCtx();
+    const chat=c.chat;
+    if(!chat?.length)return{dateUpdated:false,added:0};
+    const lastAI=[...chat].reverse().find(m=>!m.is_user);
+    if(!lastAI)return{dateUpdated:false,added:0};
+    const text=lastAI.mes||'';
+    const s=S(),d=CD();
+    const dt=parseInfoBlock(text);
+    let dateUpdated=false,added=0;
+    if(dt){s.currentDT=dt;dateUpdated=true;}
+    const found=parseSchedulesFromText(text,s.currentDT);
+    for(const f of found){
+        if(!d.schedules.some(x=>x.month===f.month&&x.day===f.day&&x.title===f.title)){
+            d.schedules.push({id:uid(),month:f.month,day:f.day,year:null,title:f.title,note:'',done:false,source:'auto',createdAt:Date.now()});
+            added++;
+        }
+    }
+    if(dateUpdated||added){sortAndAutoCheck();save();injectContext();}
+    return{dateUpdated,added};
 }
 
 // ─── 백업 ────────────────────────────────────────────────────
