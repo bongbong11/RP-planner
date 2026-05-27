@@ -78,11 +78,9 @@ function uid()  { return Date.now().toString(36)+Math.random().toString(36).slic
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 function cmpDate(a,b) {
-    // 동기화된 가상 연도가 있으면 그걸 쓰고, 없으면 실제 올해 연도(2026년 등)를 기본값으로 사용
-    const currentYear = S().currentDT?.year ?? new Date().getFullYear();
-    const ay = a.year ?? currentYear;
-    const by = b.year ?? currentYear;
-    
+    const currentYear=S().currentDT?.year??new Date().getFullYear();
+    const ay=a.year??currentYear;
+    const by=b.year??currentYear;
     if(ay!==by)return ay-by;
     if(a.month!==b.month)return a.month-b.month;
     return a.day-b.day;
@@ -121,28 +119,38 @@ function parseInfoBlock(text) {
 
 function parseSchedulesFromText(text,cur) {
     const found=[],seen=new Set();
-    const yr = cur?.year ?? null; // 현재 설정된 가상 날짜의 연도를 가져옴
-    
+    const yr=cur?.year??null;
+
     // 한국어
     const koRe=/(\d{1,2})월\s*(\d{1,2})일[에는]?\s*[,：:—\-]?\s*([^\n。.]{3,50})/g;
     let m;
     while((m=koRe.exec(text))!==null){
         const mo=+m[1],d=+m[2];
-        const title=m[3].trim().replace(/[..,\s]+$/,'').replace(/^\*+\s*[—\-]\s*/,'');
+        if(d<1||d>31||mo<1||mo>12)continue; // 유효하지 않은 날짜 제외
+        const title=m[3].trim()
+            .replace(/^\*+\s*/,'').replace(/\*+\s*[—\-]\s*/g,'')
+            .replace(/\(approx[^)]*\)\s*/gi,'').replace(/✅|⚠️/g,'')
+            .replace(/[。.,\s]+$/,'');
         if(title.length<2)continue;
-        const k=`${yr ?? 0}-${mo}-${d}-${title}`; // 연도를 고유 키값에 포함
-        if(!seen.has(k)){seen.add(k);found.push({year:yr,month:mo,day:d,title});} // year 추가
+        const k=`${yr??0}-${mo}-${d}-${title}`;
+        if(!seen.has(k)){seen.add(k);found.push({year:yr,month:mo,day:d,title});}
     }
+
     // 영어 월
     const months={january:1,february:2,march:3,april:4,may:5,june:6,july:7,august:8,september:9,october:10,november:11,december:12,jan:1,feb:2,mar:3,apr:4,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
     const enRe=/(?:\*{0,2}~?)\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\.?\s+(\d{1,2})(?:[–\-]\d{1,2})?(?:st|nd|rd|th)?(?:\s*\(approx[^)]*\))?(?:\*{0,2})?\s*[:\-—]+\s*(?:\*{0,2})([^\n*✅⚠️]{2,80})/gi;
     while((m=enRe.exec(text))!==null){
         const mo=months[m[1].toLowerCase()],d=+m[2];
-        const title=m[3].trim().replace(/[.,\s]+$/,'').replace(/^\*+\s*[—\-]\s*/,'');
+        if(!mo||d<1||d>31)continue; // 유효하지 않은 날짜 제외
+        const title=m[3].trim()
+            .replace(/^\*+\s*/,'').replace(/\*+\s*[—\-]\s*/g,'')
+            .replace(/\(approx[^)]*\)\s*/gi,'').replace(/✅|⚠️/g,'')
+            .replace(/[.,\s]+$/,'');
         if(!title||title.length<2)continue;
-        const k=`${yr ?? 0}-${mo}-${d}-${title}`; // 연도를 고유 키값에 포함
-        if(!seen.has(k)){seen.add(k);found.push({year:yr,month:mo,day:d,title});} // year 추가
+        const k=`${yr??0}-${mo}-${d}-${title}`;
+        if(!seen.has(k)){seen.add(k);found.push({year:yr,month:mo,day:d,title});}
     }
+
     // 상대날짜
     if(cur){
         const relMap={'오늘':0,'내일':1,'모레':2,'내일모레':2,'어제':-1,today:0,tomorrow:1,yesterday:-1};
@@ -152,8 +160,8 @@ function parseSchedulesFromText(text,cur) {
             const title=m[2].trim().replace(/[.,\s]+$/,'');
             if(title.length<2)continue;
             const nd=cur.day+offset;
-            const k=`${cur.month}-${nd}-${title}`;
-            if(!seen.has(k)){seen.add(k);found.push({month:cur.month,day:nd,title});}
+            const k=`${yr??0}-${cur.month}-${nd}-${title}`;
+            if(!seen.has(k)){seen.add(k);found.push({year:yr,month:cur.month,day:nd,title});}
         }
     }
     return found;
@@ -238,13 +246,11 @@ function parseAllMessages() {
     const dt=parseInfoBlock(lastAI.mes||'');
     if(dt){s.currentDT=dt;dateUpdated=true;}
     // 스케쥴은 전체 스캔
-   // 스케쥴은 전체 스캔
     for(const msg of aiMsgs){
         const found=parseSchedulesFromText(msg.mes||'',s.currentDT);
         for(const f of found){
-            // 연도까지 대조하도록 체크 조건 강화
-            if(!d.schedules.some(x=>(x.year??s.currentDT?.year)===f.year&&x.month===f.month&&x.day===f.day&&x.title===f.title)){
-                d.schedules.push({id:uid(),month:f.month,day:f.day,year:f.year,title:f.title,note:'',done:false,source:'auto',createdAt:Date.now()});
+            if(!d.schedules.some(x=>x.month===f.month&&x.day===f.day&&x.title===f.title)){
+                d.schedules.push({id:uid(),month:f.month,day:f.day,year:f.year??s.currentDT?.year??null,title:f.title,note:'',done:false,source:'auto',createdAt:Date.now()});
                 added++;
             }
         }
@@ -264,10 +270,10 @@ function parseLastOnly() {
     const dt=parseInfoBlock(text);
     let dateUpdated=false,added=0;
     if(dt){s.currentDT=dt;dateUpdated=true;}
-   const found=parseSchedulesFromText(text,s.currentDT);
+    const found=parseSchedulesFromText(text,s.currentDT);
     for(const f of found){
-        if(!d.schedules.some(x=>(x.year??s.currentDT?.year)===f.year&&x.month===f.month&&x.day===f.day&&x.title===f.title)){
-            d.schedules.push({id:uid(),month:f.month,day:f.day,year:f.year,title:f.title,note:'',done:false,source:'auto',createdAt:Date.now()});
+        if(!d.schedules.some(x=>x.month===f.month&&x.day===f.day&&x.title===f.title)){
+            d.schedules.push({id:uid(),month:f.month,day:f.day,year:f.year??s.currentDT?.year??null,title:f.title,note:'',done:false,source:'auto',createdAt:Date.now()});
             added++;
         }
     }
