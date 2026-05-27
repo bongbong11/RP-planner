@@ -567,3 +567,158 @@
 }
 #rpp-toast.show { opacity: 1; }
 #rpp-toast.rpp-toast-err { background: rgba(180,60,60,0.90); }
+
+/* ─── ══ TAB 5: SETTINGS ══ ──────────────────────────────────── */
+.rpp-ext-settings { padding: 12px; }
+
+.rpp-es-section {
+  background: #fff;
+  border: 1px solid #ece8e3;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+
+.rpp-es-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #7c5cbf;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 8px;
+}
+
+.rpp-es-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 7px;
+  flex-wrap: wrap;
+}
+.rpp-es-row:last-child { margin-bottom: 0; }
+
+.rpp-es-label {
+  font-size: 0.79rem;
+  color: #5a5048;
+  min-width: 80px;
+  flex-shrink: 0;
+}
+
+.rpp-es-select {
+  flex: 1;
+  background: #fff !important;
+  border: 1px solid #ddd8d2 !important;
+  border-radius: 6px !important;
+  color: #3a3530 !important;
+  padding: 3px 7px !important;
+  font-size: 0.81rem !important;
+  font-family: inherit !important;
+  height: 28px !important;
+  outline: none !important;
+}
+.rpp-es-select:focus { border-color: #b39ddb !important; }
+
+.rpp-es-num {
+  width: 55px !important;
+  background: #fff !important;
+  border: 1px solid #ddd8d2 !important;
+  border-radius: 6px !important;
+  color: #3a3530 !important;
+  padding: 3px 7px !important;
+  font-size: 0.81rem !important;
+  height: 28px !important;
+  outline: none !important;
+  -moz-appearance: textfield;
+}
+.rpp-es-num::-webkit-inner-spin-button,
+.rpp-es-num::-webkit-outer-spin-button { -webkit-appearance: none; }
+
+.rpp-es-hint {
+  font-size: 0.7rem;
+  color: #b0a898;
+}
+
+.rpp-es-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.rpp-es-radio {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.8rem;
+  color: #5a5048;
+  cursor: pointer;
+}
+.rpp-es-radio input { accent-color: #7c5cbf; cursor: pointer; }
+
+/* 토글 스위치 */
+.rpp-es-toggle-wrap {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+.rpp-es-toggle-wrap input { display: none; }
+.rpp-es-toggle {
+  width: 36px; height: 20px;
+  background: #ddd8d2;
+  border-radius: 10px;
+  position: relative;
+  transition: background 0.2s;
+}
+.rpp-es-toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 16px; height: 16px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform 0.2s;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+}
+.rpp-es-toggle-wrap input:checked + .rpp-es-toggle { background: #a07be8; }
+.rpp-es-toggle-wrap input:checked + .rpp-es-toggle::after { transform: translateX(16px); }
+
+/* 미리보기 */
+.rpp-es-preview { background: #f8f4ff; border-color: #e8deff; }
+.rpp-es-pre {
+  background: #fff;
+  border: 1px solid #ece4ff;
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 0.72rem;
+  color: #5a4a8a;
+  font-family: 'Consolas', 'D2Coding', monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+  line-height: 1.6;
+  margin-top: 4px;
+}
+
+/* ─── 상태 버튼 (탭바) ──────────────────────────────────────── */
+.rpp-status-btn {
+  font-size: 0.88rem !important;
+  color: #6ab87a !important;
+}
+.rpp-status-btn.off { color: #c0b8b0 !important; }
+
+.rpp-sync-btn { font-size: 0.95rem !important; color: #9080c8 !important; }
+.rpp-sync-btn.manual-mode { color: #e09040 !important; }
+
+/* ─── Extensions 설정 패널 (ST 내장) ───────────────────────── */
+.rpp-ext-block { margin-bottom: 8px; }
+.rpp-ext-inner { padding: 8px 4px; display: flex; flex-direction: column; gap: 6px; }
+.rpp-ext-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.83rem;
+}
+.rpp-ext-row label:first-child {
+  min-width: 130px;
+  color: var(--SmartThemeBodyColor, #d0d0d8);
+  font-size: 0.82rem;
+}
