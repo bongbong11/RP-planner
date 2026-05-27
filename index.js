@@ -7,7 +7,8 @@
 //   - 연결프로필: extension_settings.connectionManager.profiles 에서 읽어옴
 
 import { saveSettingsDebounced, getContext, eventSource, event_types } from '../../../../script.js';
-import { extension_settings, setExtensionPrompt, extension_prompt_types } from '../../../extensions.js';
+import { extension_settings, setExtensionPrompt } from '../../../extensions.js';
+const extension_prompt_types = { IN_CHAT: 1, BEFORE_PROMPT: 0, IN_PROMPT: 2 };
 
 const EXT        = 'rp-planner';
 const INJECT_KEY = 'rp-planner-inject';
