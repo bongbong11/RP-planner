@@ -435,9 +435,10 @@ Return ONLY JSON array: [{"year":2027,"month":5,"day":3,"dayEnd":5,"title":"Even
 
         let raw='';
         if(typeof response==='string') raw=response;
+        else if(typeof response?.content==='string') raw=response.content;
         else if(response?.choices?.[0]?.message?.content) raw=response.choices[0].message.content;
         else if(response?.content?.[0]?.text) raw=response.content[0].text;
-        else if(response?.content) raw=String(response.content);
+        else { console.error('[RPPlanner] Unknown response structure:', response); return{error:'알 수 없는 응답 형식'}; }
 
         const clean=raw.replace(/```json|```/g,'').trim();
         const jsonMatch=clean.match(/\[[\s\S]*\]/);
