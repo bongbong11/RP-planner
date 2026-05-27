@@ -7,116 +7,136 @@
 //   - 연결프로필: extension_settings.connectionManager.profiles 에서 읽어옴
 
 
+// RP Planner v5 — SillyTavern Extension
+
 import { event_types } from '../../../events.js';
 
 const EXT        = 'rp-planner';
 const INJECT_KEY = 'rp-planner-inject';
 const LOG        = '[RPPlanner]';
 
-// ─── 전역 컨텍스트 ───────────────────────────────────────────
 let ctx = null;
+function getCtx() { if(!ctx) ctx=SillyTavern.getContext(); return ctx; }
 
-function getCtx() {
-    if (!ctx) ctx = SillyTavern.getContext();
-    return ctx;
+// ─── 캐릭터별 데이터 키 ──────────────────────────────────────
+function charKey() {
+    const c=getCtx();
+    const id=c.characterId??'global';
+    return `char_${id}`;
 }
 
+const CHAR_DEFAULTS = {
+    schedules:   [],
+    characters:  [],
+    loreEntries: [],
+};
+
+const GLOBAL_DEFAULTS = {
+    currentDT:     null,
+    syncMode:      'auto',   // 'auto' | 'manual' | 'off'
+    syncPattern:   'Date: YYYY.MM.DD',
+    injectEnabled: true,
+    injectDepth:   2,
+    backupSlots:   [],       // [{ id, name, data, savedAt }]
+    charData:      {},       // { char_ID: { schedules, characters, loreEntries } }
+};
+
 function S() {
-    const c = getCtx();
-    if (!c.extensionSettings[EXT]) c.extensionSettings[EXT] = structuredClone(DEFAULTS);
-    const d = c.extensionSettings[EXT];
-    if (!d.characters)               d.characters = [];
-    if (!d.loreEntries)              d.loreEntries = [];
-    if (d.autoSync === undefined)    d.autoSync = true;
-    if (d.syncProfileId === undefined) d.syncProfileId = null;
-    if (d.injectEnabled === undefined) d.injectEnabled = true;
-    if (d.injectDepth === undefined)   d.injectDepth = 2;
+    const c=getCtx();
+    if(!c.extensionSettings[EXT]) c.extensionSettings[EXT]=structuredClone(GLOBAL_DEFAULTS);
+    const d=c.extensionSettings[EXT];
+    if(!d.charData)      d.charData={};
+    if(!d.backupSlots)   d.backupSlots=[];
+    if(!d.syncPattern)   d.syncPattern='Date: YYYY.MM.DD';
+    if(d.syncMode===undefined) d.syncMode='auto';
+    return d;
+}
+
+function CD() {
+    const s=S(), k=charKey();
+    if(!s.charData[k]) s.charData[k]=structuredClone(CHAR_DEFAULTS);
+    const d=s.charData[k];
+    if(!d.characters)  d.characters=[];
+    if(!d.loreEntries) d.loreEntries=[];
     return d;
 }
 
 function save() { getCtx().saveSettingsDebounced(); }
 
-// ─── 기본 설정 ────────────────────────────────────────────────
-const DEFAULTS = {
-    currentDT:     null,
-    schedules:     [],
-    characters:    [],
-    loreEntries:   [],
-    syncProfileId: null,
-    autoSync:      true,
-    injectEnabled: true,
-    injectDepth:   2,
-};
-
 // ─── 유틸 ────────────────────────────────────────────────────
-function uid()  { return Date.now().toString(36) + Math.random().toString(36).slice(2,5); }
+function uid()  { return Date.now().toString(36)+Math.random().toString(36).slice(2,5); }
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 function cmpDate(a,b) {
-    const ay=a.year??0, by=b.year??0;
-    if(ay!==by) return ay-by;
-    if(a.month!==b.month) return a.month-b.month;
+    const ay=a.year??0,by=b.year??0;
+    if(ay!==by)return ay-by;
+    if(a.month!==b.month)return a.month-b.month;
     return a.day-b.day;
 }
-function isPast(s,cur)  { return cur ? cmpDate(s,cur)<0  : false; }
-function isToday(s,cur) { return cur ? cmpDate(s,cur)===0 : false; }
+function isPast(s,cur)  { return cur?cmpDate(s,cur)<0:false; }
+function isToday(s,cur) { return cur?cmpDate(s,cur)===0:false; }
 
 function fmtDate(d) {
-    if(!d) return '—';
-    const y = d.year ? `${d.year}.` : '';
+    if(!d)return '—';
+    const y=d.year?`${d.year}.`:'';
     return `${y}${String(d.month).padStart(2,'0')}.${String(d.day).padStart(2,'0')}`;
 }
 function fmtTime(d) {
-    if(!d||d.hour==null) return '';
-    return `${String(d.hour).padStart(2,'0')}:${String(d.minute??0).padStart(2,'0')}`;
+    if(!d||d.hour==null)return '';
+    const ampm=d.hour<12?'AM':'PM';
+    const h=d.hour%12||12;
+    return `${String(h).padStart(2,'0')}:${String(d.minute??0).padStart(2,'0')} ${ampm}`;
 }
-
-// ─── 연결 프로필 목록 ────────────────────────────────────────
-function getConnectionProfiles() {
-    return getCtx().extensionSettings?.connectionManager?.profiles ?? [];
+function fmtDayName(d) {
+    if(!d)return '';
+    const days=['SUN','MON','TUE','WED','THU','FRI','SAT'];
+    const date=new Date(d.year??2000,d.month-1,d.day);
+    return days[date.getDay()];
 }
 
 // ─── 인포블럭 파싱 ───────────────────────────────────────────
 function parseInfoBlock(text) {
-    const dateRe   = /(?:Date|날짜)\s*:\s*(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})/i;
-    const timeRe   = /(?:Time|시간)\s*:\s*(\d{1,2}):(\d{2})/i;
-    const seasonRe = /(?:Season|계절)\s*:\s*([^\|\n\r]{1,20})/i;
-    const dm = dateRe.exec(text);
-    if(!dm) return null;
-    const r = { year:+dm[1], month:+dm[2], day:+dm[3], hour:null, minute:null, season:null };
-    const tm = timeRe.exec(text);   if(tm) { r.hour=+tm[1]; r.minute=+tm[2]; }
-    const sm = seasonRe.exec(text); if(sm) r.season = sm[1].trim();
+    const dateRe  =/(?:Date|날짜)\s*:\s*(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})/i;
+    const timeRe  =/(?:Time|시간)\s*:\s*(\d{1,2}):(\d{2})/i;
+    const seasonRe=/(?:Season|계절)\s*:\s*([^\|\n\r]{1,20})/i;
+    const dm=dateRe.exec(text);
+    if(!dm)return null;
+    const r={year:+dm[1],month:+dm[2],day:+dm[3],hour:null,minute:null,season:null};
+    const tm=timeRe.exec(text);   if(tm){r.hour=+tm[1];r.minute=+tm[2];}
+    const sm=seasonRe.exec(text); if(sm)r.season=sm[1].trim();
     return r;
 }
 
-// ─── 스케쥴 텍스트 파싱 ──────────────────────────────────────
-function parseSchedulesFromText(text, cur) {
-    const found=[], seen=new Set();
-    const koRe=/(\d{1,2})월\s*(\d{1,2})일[에는]?\s*[,：:—\-]?\s*([^\n。.]{3,40})/g;
+function parseSchedulesFromText(text,cur) {
+    const found=[],seen=new Set();
+    // 한국어
+    const koRe=/(\d{1,2})월\s*(\d{1,2})일[에는]?\s*[,：:—\-]?\s*([^\n。.]{3,50})/g;
     let m;
     while((m=koRe.exec(text))!==null){
-        const mo=+m[1], d=+m[2];
-        const title=m[3].trim().replace(/[。.,\s]+$/,'');
-        if(title.length<2) continue;
+        const mo=+m[1],d=+m[2];
+        const title=m[3].trim().replace(/[。.,\s]+$/,'').replace(/^\*+\s*[—\-]\s*/,'');
+        if(title.length<2)continue;
         const k=`${mo}-${d}-${title}`;
         if(!seen.has(k)){seen.add(k);found.push({month:mo,day:d,title});}
     }
+    // 영어 월
     const months={january:1,february:2,march:3,april:4,may:5,june:6,july:7,august:8,september:9,october:10,november:11,december:12,jan:1,feb:2,mar:3,apr:4,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
-    const enRe=/\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\s+(\d{1,2})(?:st|nd|rd|th)?\b[,\s]*([^\n.]{3,40})?/gi;
+    const enRe=/\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\s+(\d{1,2})(?:st|nd|rd|th)?[:\-—\s]+([^\n.]{3,50})/gi;
     while((m=enRe.exec(text))!==null){
-        const mo=months[m[1].toLowerCase()], d=+m[2];
-        const title=(m[3]||'').trim().replace(/[.,\s]+$/,'');
-        if(!title||title.length<2) continue;
+        const mo=months[m[1].toLowerCase()],d=+m[2];
+        const title=m[3].trim().replace(/[.,\s]+$/,'').replace(/^\*+\s*[—\-]\s*/,'');
+        if(!title||title.length<2)continue;
         const k=`${mo}-${d}-${title}`;
         if(!seen.has(k)){seen.add(k);found.push({month:mo,day:d,title});}
     }
+    // 상대날짜
     if(cur){
         const relMap={'오늘':0,'내일':1,'모레':2,'내일모레':2,'어제':-1,today:0,tomorrow:1,yesterday:-1};
-        const relRe=/\b(오늘|내일모레|내일|모레|어제|today|tomorrow|yesterday)\b[에는]?\s*[,：:—\-]?\s*([^\n。.]{3,30})/gi;
+        const relRe=/\b(오늘|내일모레|내일|모레|어제|today|tomorrow|yesterday)\b[에는]?\s*[,：:—\-]?\s*([^\n。.]{3,40})/gi;
         while((m=relRe.exec(text))!==null){
             const offset=relMap[m[1].toLowerCase()]??0;
             const title=m[2].trim().replace(/[.,\s]+$/,'');
-            if(title.length<2) continue;
+            if(title.length<2)continue;
             const nd=cur.day+offset;
             const k=`${cur.month}-${nd}-${title}`;
             if(!seen.has(k)){seen.add(k);found.push({month:cur.month,day:nd,title});}
@@ -127,125 +147,201 @@ function parseSchedulesFromText(text, cur) {
 
 // ─── 스케쥴 CRUD ─────────────────────────────────────────────
 function sortAndAutoCheck() {
-    const s=S();
-    s.schedules.sort(cmpDate);
-    if(s.currentDT) s.schedules.forEach(x=>{if(!x.done&&isPast(x,s.currentDT))x.done=true;});
+    const d=CD(),cur=S().currentDT;
+    d.schedules.sort(cmpDate);
+    if(cur)d.schedules.forEach(x=>{if(!x.done&&isPast(x,cur))x.done=true;});
 }
 function addSchedule({month,day,year=null,title,note='',source='manual'}) {
-    S().schedules.push({id:uid(),month:+month,day:+day,year:year?+year:null,title:title.trim(),note:note.trim(),done:false,source,createdAt:Date.now()});
-    sortAndAutoCheck(); save(); injectContext();
+    CD().schedules.push({id:uid(),month:+month,day:+day,year:year?+year:null,title:title.trim(),note:note.trim(),done:false,source,createdAt:Date.now()});
+    sortAndAutoCheck();save();injectContext();
 }
-function removeSchedule(id) { const s=S(); s.schedules=s.schedules.filter(x=>x.id!==id); save(); injectContext(); }
-function toggleDone(id)     { const s=S(); const x=s.schedules.find(x=>x.id===id); if(x){x.done=!x.done;save();injectContext();} }
+function removeSchedule(id) { const d=CD();d.schedules=d.schedules.filter(x=>x.id!==id);save();injectContext(); }
+function toggleDone(id)     { const d=CD();const x=d.schedules.find(x=>x.id===id);if(x){x.done=!x.done;save();injectContext();} }
 
 // ─── 캐릭터 CRUD ─────────────────────────────────────────────
-function addCharacter(name) {
-    S().characters.push({id:uid(),name:name.trim(),fields:[{key:'',val:''}]});
-    save(); injectContext();
-}
-function removeCharacter(id) { const s=S(); s.characters=s.characters.filter(x=>x.id!==id); save(); injectContext(); }
+function addCharacter(name) { CD().characters.push({id:uid(),name:name.trim(),fields:[{key:'',val:''}]});save();injectContext(); }
+function removeCharacter(id){ const d=CD();d.characters=d.characters.filter(x=>x.id!==id);save();injectContext(); }
 
 // ─── 로어 CRUD ───────────────────────────────────────────────
-function addLore(title,content='') {
-    S().loreEntries.push({id:uid(),title:title.trim(),content:content.trim()});
-    save(); injectContext();
-}
-function removeLore(id) { const s=S(); s.loreEntries=s.loreEntries.filter(x=>x.id!==id); save(); injectContext(); }
+function addLore(title,content='') { CD().loreEntries.push({id:uid(),title:title.trim(),content:content.trim()});save();injectContext(); }
+function removeLore(id)            { const d=CD();d.loreEntries=d.loreEntries.filter(x=>x.id!==id);save();injectContext(); }
 function updateLore(id,title,content) {
-    const s=S(); const e=s.loreEntries.find(x=>x.id===id);
+    const d=CD();const e=d.loreEntries.find(x=>x.id===id);
     if(e){e.title=title;e.content=content;save();injectContext();}
 }
 
 // ─── Context 주입 ─────────────────────────────────────────────
 function buildInjectText() {
-    const s=S(), cur=s.currentDT, lines=[];
-
+    const s=S(),d=CD(),cur=s.currentDT,lines=[];
     if(cur){
-        const d=fmtDate(cur), t=fmtTime(cur);
+        const dt=fmtDate(cur),t=fmtTime(cur);
         const season=cur.season?` | Season: ${cur.season}`:'';
-        lines.push(`[RP Current Date: ${d}${t?` | Time: ${t}`:''}${season}]`);
+        lines.push(`[RP Current Date: ${dt}${t?` | Time: ${t}`:''}${season}]`);
     }
-
-    const upcoming=s.schedules.filter(x=>!x.done&&(!cur||!isPast(x,cur)));
+    const upcoming=d.schedules.filter(x=>!x.done&&(!cur||!isPast(x,cur)));
     if(upcoming.length){
         lines.push('[RP Upcoming Schedule:');
-        upcoming.forEach(x=>{ const note=x.note?` (${x.note})`:''; lines.push(`  - ${x.month}/${x.day}: ${x.title}${note}`); });
+        upcoming.forEach(x=>{const note=x.note?` (${x.note})`:'';lines.push(`  - ${x.month}/${x.day}: ${x.title}${note}`);});
         lines.push(']');
     }
-
-    const past=s.schedules.filter(x=>x.done||(cur&&isPast(x,cur)));
+    const past=d.schedules.filter(x=>x.done||(cur&&isPast(x,cur)));
     if(past.length){
         lines.push('[RP Past Events (already occurred — do not repeat or initiate again):');
-        past.forEach(x=>{ const note=x.note?` (${x.note})`:''; lines.push(`  - ${x.month}/${x.day}: ${x.title}${note} — completed`); });
+        past.forEach(x=>{const note=x.note?` (${x.note})`:'';lines.push(`  - ${x.month}/${x.day}: ${x.title}${note} — completed`);});
         lines.push(']');
     }
-
-    s.characters.forEach(c=>{
-        if(!c.name) return;
+    d.characters.forEach(c=>{
+        if(!c.name)return;
         const fl=c.fields.filter(f=>f.key&&f.val).map(f=>`  ${f.key}: ${f.val}`);
-        if(fl.length){ lines.push(`[Character — ${c.name}:`); lines.push(...fl); lines.push(']'); }
+        if(fl.length){lines.push(`[Character — ${c.name}:`);lines.push(...fl);lines.push(']');}
     });
-
-    s.loreEntries.forEach(e=>{
-        if(!e.title&&!e.content) return;
+    d.loreEntries.forEach(e=>{
+        if(!e.title&&!e.content)return;
         lines.push(`[${e.title||'Note'}:`);
         e.content.split('\n').forEach(l=>{if(l.trim())lines.push(`  ${l.trim()}`);});
         lines.push(']');
     });
-
     return lines.join('\n');
 }
 
 function injectContext() {
-    const s=S(), c=getCtx();
-    if(!s.injectEnabled){
-        c.setExtensionPrompt?.(INJECT_KEY,'',1,0);
-        return;
-    }
-    const text=buildInjectText();
-    c.setExtensionPrompt?.(INJECT_KEY, text, 1, s.injectDepth);
+    const s=S(),c=getCtx();
+    if(!s.injectEnabled){c.setExtensionPrompt?.(INJECT_KEY,'',1,0);return;}
+    c.setExtensionPrompt?.(INJECT_KEY,buildInjectText(),1,s.injectDepth);
 }
 
-// ─── 동기화: 마지막 메시지 파싱 ─────────────────────────────
-function parseLastMessage() {
+// ─── 전체 채팅 파싱 ──────────────────────────────────────────
+function parseAllMessages() {
     const c=getCtx();
     const chat=c.chat;
-    if(!chat?.length) return {dateUpdated:false,added:0};
+    if(!chat?.length)return{dateUpdated:false,added:0};
+    const aiMsgs=[...chat].filter(m=>!m.is_user);
+    if(!aiMsgs.length)return{dateUpdated:false,added:0};
+    const s=S(),d=CD();
+    let dateUpdated=false,added=0;
+    // 날짜는 마지막 AI 메시지 기준
+    const lastAI=aiMsgs[aiMsgs.length-1];
+    const dt=parseInfoBlock(lastAI.mes||'');
+    if(dt){s.currentDT=dt;dateUpdated=true;}
+    // 스케쥴은 전체 스캔
+    for(const msg of aiMsgs){
+        const found=parseSchedulesFromText(msg.mes||'',s.currentDT);
+        for(const f of found){
+            if(!d.schedules.some(x=>x.month===f.month&&x.day===f.day&&x.title===f.title)){
+                d.schedules.push({id:uid(),month:f.month,day:f.day,year:null,title:f.title,note:'',done:false,source:'auto',createdAt:Date.now()});
+                added++;
+            }
+        }
+    }
+    if(dateUpdated||added){sortAndAutoCheck();save();injectContext();}
+    return{dateUpdated,added};
+}
+
+function parseLastOnly() {
+    const c=getCtx();
+    const chat=c.chat;
+    if(!chat?.length)return{dateUpdated:false,added:0};
     const lastAI=[...chat].reverse().find(m=>!m.is_user);
-    if(!lastAI) return {dateUpdated:false,added:0};
+    if(!lastAI)return{dateUpdated:false,added:0};
     const text=lastAI.mes||'';
-    const s=S();
+    const s=S(),d=CD();
     const dt=parseInfoBlock(text);
-    let dateUpdated=false;
+    let dateUpdated=false,added=0;
     if(dt){s.currentDT=dt;dateUpdated=true;}
     const found=parseSchedulesFromText(text,s.currentDT);
-    let added=0;
     for(const f of found){
-        if(!s.schedules.some(x=>x.month===f.month&&x.day===f.day&&x.title===f.title)){
-            s.schedules.push({id:uid(),month:f.month,day:f.day,year:null,title:f.title,note:'',done:false,source:'auto',createdAt:Date.now()});
+        if(!d.schedules.some(x=>x.month===f.month&&x.day===f.day&&x.title===f.title)){
+            d.schedules.push({id:uid(),month:f.month,day:f.day,year:null,title:f.title,note:'',done:false,source:'auto',createdAt:Date.now()});
             added++;
         }
     }
     if(dateUpdated||added){sortAndAutoCheck();save();injectContext();}
-    return {dateUpdated,added};
+    return{dateUpdated,added};
+}
+
+// ─── 백업 ────────────────────────────────────────────────────
+function createBackupSlot(name) {
+    const s=S();
+    const slot={
+        id:uid(),
+        name:name||`Backup ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`,
+        data:JSON.parse(JSON.stringify({charData:s.charData,currentDT:s.currentDT})),
+        savedAt:Date.now(),
+    };
+    s.backupSlots.unshift(slot);
+    if(s.backupSlots.length>10)s.backupSlots=s.backupSlots.slice(0,10);
+    save();
+    return slot;
+}
+
+function restoreBackupSlot(id) {
+    const s=S();
+    const slot=s.backupSlots.find(x=>x.id===id);
+    if(!slot)return false;
+    if(slot.data.charData)s.charData=JSON.parse(JSON.stringify(slot.data.charData));
+    if(slot.data.currentDT)s.currentDT=slot.data.currentDT;
+    sortAndAutoCheck();save();injectContext();
+    return true;
+}
+
+function deleteBackupSlot(id) {
+    const s=S();s.backupSlots=s.backupSlots.filter(x=>x.id!==id);save();
+}
+
+function exportToFile() {
+    const s=S();
+    const data={charData:s.charData,currentDT:s.currentDT,exportedAt:Date.now()};
+    const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;a.download=`rp-planner-${Date.now()}.json`;
+    document.body.appendChild(a);a.click();
+    document.body.removeChild(a);URL.revokeObjectURL(url);
+}
+
+function importFromFile(file) {
+    return new Promise((resolve,reject)=>{
+        const reader=new FileReader();
+        reader.onload=e=>{
+            try{
+                const data=JSON.parse(e.target.result);
+                const s=S();
+                if(data.charData)s.charData=data.charData;
+                if(data.currentDT)s.currentDT=data.currentDT;
+                sortAndAutoCheck();save();injectContext();
+                resolve(true);
+            }catch(err){reject(err);}
+        };
+        reader.onerror=reject;
+        reader.readAsText(file);
+    });
+}
+
+function clearAllData() {
+    const s=S();
+    s.charData={};s.currentDT=null;
+    save();injectContext();
 }
 
 // ══════════════════════════════════════════════════════════════
-// UI
+// UI STATE
 // ══════════════════════════════════════════════════════════════
-let panelOpen=false, activeTab='calendar', calYear=null, calMonth=null, scheduleFilterDay=null;
+let panelOpen=false,activeTab='calendar';
+let calYear=null,calMonth=null;
+let schedViewDate=null; // { month, day } — 스케쥴 탭 현재 보는 날짜
 
+// ─── 패널 골격 ───────────────────────────────────────────────
 function getPanelHTML() {
     return `<div id="rpp-panel">
   <div id="rpp-tabs">
-    <button class="rpp-tab" data-tab="calendar" title="캘린더">📅</button>
-    <button class="rpp-tab" data-tab="schedule" title="스케쥴">🗓</button>
-    <button class="rpp-tab" data-tab="character" title="캐릭터">👤</button>
-    <button class="rpp-tab" data-tab="lore" title="로어">🏠</button>
-    <button class="rpp-tab" data-tab="settings" title="설정">⚙️</button>
+    <button class="rpp-tab" data-tab="calendar" title="Calendar">📅</button>
+    <button class="rpp-tab" data-tab="schedule" title="Schedule">🗓</button>
+    <button class="rpp-tab" data-tab="character" title="Character">👤</button>
+    <button class="rpp-tab" data-tab="lore" title="Lore">🏠</button>
+    <button class="rpp-tab" data-tab="settings" title="Settings">⚙️</button>
     <div class="rpp-tab-spacer"></div>
-    <button id="rpp-inject-status" class="rpp-tab rpp-status-btn" title="롤플 반영 켜짐">📤</button>
-    <button id="rpp-sync-btn" class="rpp-tab rpp-sync-btn" title="지금 동기화">⚡</button>
+    <button id="rpp-inject-toggle" class="rpp-tab rpp-inject-btn" title="Toggle RP injection">📤</button>
+    <button id="rpp-sync-btn" class="rpp-tab rpp-sync-icon" title="Sync now">⚡</button>
     <button id="rpp-close" class="rpp-tab rpp-close-tab">✕</button>
   </div>
   <div id="rpp-content"></div>
@@ -253,12 +349,12 @@ function getPanelHTML() {
 </div>`;
 }
 
-function switchTab(tab, opts={}) {
+function switchTab(tab,opts={}) {
     activeTab=tab;
     document.querySelectorAll('.rpp-tab[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
     const c=document.getElementById('rpp-content');
-    if(!c) return;
-    if(opts.day) scheduleFilterDay=opts.day;
+    if(!c)return;
+    if(opts.date)schedViewDate=opts.date;
     switch(tab){
         case 'calendar':  c.innerHTML=renderCalendar();  bindCalendarEvents();  break;
         case 'schedule':  c.innerHTML=renderSchedule();  bindScheduleEvents();  break;
@@ -266,294 +362,433 @@ function switchTab(tab, opts={}) {
         case 'lore':      c.innerHTML=renderLore();      bindLoreEvents();      break;
         case 'settings':  c.innerHTML=renderSettings();  bindSettingsEvents();  break;
     }
+    updateHeaderBtns();
+}
+
+function updateHeaderBtns() {
+    const s=S();
+    const injectBtn=document.getElementById('rpp-inject-toggle');
+    if(injectBtn){
+        injectBtn.classList.toggle('inactive',!s.injectEnabled);
+        injectBtn.title=s.injectEnabled?'RP Injection ON (click to disable)':'RP Injection OFF (click to enable)';
+        injectBtn.textContent=s.injectEnabled?'📤':'🔕';
+    }
+    const syncBtn=document.getElementById('rpp-sync-btn');
+    if(syncBtn){
+        syncBtn.classList.toggle('manual-mode',s.syncMode!=='auto');
+    }
 }
 
 // ══════════════════════════════════════════════════════════════
 // TAB 1: CALENDAR
 // ══════════════════════════════════════════════════════════════
 function renderCalendar() {
-    const s=S(), cur=s.currentDT;
-    if(!calYear||!calMonth){ calYear=cur?.year??new Date().getFullYear(); calMonth=cur?.month??new Date().getMonth()+1; }
-    const year=calYear, month=calMonth;
-    const dtStr=cur?`${fmtDate(cur)}${fmtTime(cur)?'  '+fmtTime(cur):''}${cur.season?'  '+cur.season:''}`:'날짜 미설정';
+    const s=S(),d=CD(),cur=s.currentDT;
+    if(!calYear||!calMonth){
+        calYear=cur?.year??new Date().getFullYear();
+        calMonth=cur?.month??new Date().getMonth()+1;
+    }
+    const year=calYear,month=calMonth;
+
+    // 현재 RP 날짜 표시
+    let dtDisplay='';
+    if(cur){
+        const dayName=fmtDayName(cur);
+        const time=fmtTime(cur);
+        const season=cur.season?` · ${cur.season}`:'';
+        dtDisplay=`<div class="cal-dt-display">
+          <div class="cal-dt-date">${fmtDate(cur)} <span class="cal-dt-day">${dayName}</span></div>
+          ${time?`<div class="cal-dt-time">${time}${season}</div>`:''}
+        </div>`;
+    } else {
+        dtDisplay=`<div class="cal-dt-display cal-dt-unset">No date synced — go to Settings</div>`;
+    }
+
+    // 달력
     const firstDay=new Date(year,month-1,1).getDay();
     const daysInMonth=new Date(year,month,0).getDate();
     const prevDays=new Date(year,month-1,0).getDate();
+
+    // 날짜별 스케쥴 맵
     const schedMap={};
-    s.schedules.forEach(sc=>{
+    d.schedules.forEach(sc=>{
         if(sc.year&&sc.year!==year)return;
         if(sc.month!==month)return;
-        if(!schedMap[sc.day])schedMap[sc.day]=[];
-        schedMap[sc.day].push(sc);
+        if(!schedMap[sc.day])schedMap[sc.day]={upcoming:0,done:0};
+        if(sc.done)schedMap[sc.day].done++;
+        else schedMap[sc.day].upcoming++;
     });
-    const dns=['일','월','화','수','목','금','토'];
+
+    const dns=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
     const dhdr=dns.map((d,i)=>`<div class="cal-dh${i===0?' sun':i===6?' sat':''}">${d}</div>`).join('');
+
     let cells='';
-    for(let i=0;i<firstDay;i++) cells+=`<div class="cal-cell cal-other"><span class="cal-num">${prevDays-firstDay+1+i}</span></div>`;
+    for(let i=0;i<firstDay;i++)
+        cells+=`<div class="cal-cell cal-other"><span class="cal-num">${prevDays-firstDay+1+i}</span></div>`;
+
     for(let d=1;d<=daysInMonth;d++){
         const dow=(firstDay+d-1)%7;
         const isCur=cur&&cur.month===month&&cur.day===d&&(cur.year??year)===year;
-        const scs=schedMap[d]||[];
+        const sc=schedMap[d];
         let cls='cal-cell';
-        if(dow===0)cls+=' sun'; if(dow===6)cls+=' sat'; if(isCur)cls+=' cal-today';
-        const pills=scs.slice(0,2).map(sc=>`<div class="cal-pill ${sc.done?'pill-done':'pill-active'}">${esc(sc.title)}</div>`).join('');
-        cells+=`<div class="${cls}" data-day="${d}"><span class="cal-num">${d}</span>${pills}</div>`;
+        if(dow===0)cls+=' sun';
+        if(dow===6)cls+=' sat';
+        if(isCur)cls+=' cal-today';
+
+        let dots='';
+        if(sc){
+            if(sc.upcoming>0)dots+=`<span class="cal-dot dot-upcoming"></span>`;
+            if(sc.done>0)dots+=`<span class="cal-dot dot-done"></span>`;
+        }
+        cells+=`<div class="${cls}" data-day="${d}" data-month="${month}">
+          <span class="cal-num">${d}</span>
+          ${dots?`<div class="cal-dots">${dots}</div>`:''}
+        </div>`;
     }
     const rem=(7-((firstDay+daysInMonth)%7))%7;
-    for(let i=1;i<=rem;i++) cells+=`<div class="cal-cell cal-other"><span class="cal-num">${i}</span></div>`;
+    for(let i=1;i<=rem;i++)
+        cells+=`<div class="cal-cell cal-other"><span class="cal-num">${i}</span></div>`;
 
     return `<div class="rpp-cal-wrap">
-  <div class="cal-dt-bar"><div class="cal-dt-main">${esc(dtStr)}</div><button class="rpp-btn rpp-btn-xs" id="cal-dt-edit-btn">수정</button></div>
-  <div id="cal-dt-form" class="cal-dt-form" style="display:none">
-    <div class="cal-df-row">
-      <input id="cdf-y" type="number" class="rpp-inp" placeholder="연도" style="width:62px">
-      <input id="cdf-m" type="number" class="rpp-inp" placeholder="월" min="1" max="12" style="width:42px">
-      <input id="cdf-d" type="number" class="rpp-inp" placeholder="일" min="1" max="31" style="width:42px">
-    </div>
-    <div class="cal-df-row">
-      <input id="cdf-h" type="number" class="rpp-inp" placeholder="시" min="0" max="23" style="width:42px">
-      <span class="rpp-sep">:</span>
-      <input id="cdf-mi" type="number" class="rpp-inp" placeholder="분" min="0" max="59" style="width:42px">
-      <input id="cdf-s" type="text" class="rpp-inp" placeholder="계절" style="width:56px">
-    </div>
-    <div class="cal-df-row">
-      <button class="rpp-btn rpp-btn-primary rpp-btn-xs" id="cdf-save">저장</button>
-      <button class="rpp-btn rpp-btn-xs" id="cdf-cancel">취소</button>
-    </div>
-  </div>
+  ${dtDisplay}
   <div class="cal-nav">
     <button class="rpp-btn rpp-btn-xs" id="cal-prev">‹</button>
-    <span class="cal-month-label">${year}년 ${month}월</span>
+    <span class="cal-month-label">${year} / ${String(month).padStart(2,'0')}</span>
     <button class="rpp-btn rpp-btn-xs" id="cal-next">›</button>
   </div>
   <div class="cal-grid">
     <div class="cal-header">${dhdr}</div>
     <div class="cal-body">${cells}</div>
   </div>
-  <div class="cal-legend"><span class="cal-dot dot-active"></span>예정<span class="cal-dot dot-done" style="margin-left:8px"></span>완료</div>
+  <div class="cal-legend">
+    <span class="cal-dot dot-upcoming"></span><span>Upcoming</span>
+    <span class="cal-dot dot-done" style="margin-left:10px"></span><span>Done</span>
+  </div>
 </div>`;
 }
 
 function bindCalendarEvents() {
-    document.getElementById('cal-prev')?.addEventListener('click',()=>{calMonth--;if(calMonth<1){calMonth=12;calYear--;}switchTab('calendar');});
-    document.getElementById('cal-next')?.addEventListener('click',()=>{calMonth++;if(calMonth>12){calMonth=1;calYear++;}switchTab('calendar');});
+    document.getElementById('cal-prev')?.addEventListener('click',e=>{
+        e.stopPropagation();
+        calMonth--;if(calMonth<1){calMonth=12;calYear--;}
+        switchTab('calendar');
+    });
+    document.getElementById('cal-next')?.addEventListener('click',e=>{
+        e.stopPropagation();
+        calMonth++;if(calMonth>12){calMonth=1;calYear++;}
+        switchTab('calendar');
+    });
     document.querySelectorAll('.cal-cell[data-day]').forEach(cell=>{
-        cell.addEventListener('click',()=>{ scheduleFilterDay={month:calMonth,day:+cell.dataset.day}; switchTab('schedule'); });
-    });
-    document.getElementById('cal-dt-edit-btn')?.addEventListener('click',()=>{
-        const f=document.getElementById('cal-dt-form');
-        const open=f.style.display==='none';
-        f.style.display=open?'flex':'none';
-        if(open){const dt=S().currentDT;if(dt){document.getElementById('cdf-y').value=dt.year??'';document.getElementById('cdf-m').value=dt.month??'';document.getElementById('cdf-d').value=dt.day??'';document.getElementById('cdf-h').value=dt.hour??'';document.getElementById('cdf-mi').value=dt.minute??'';document.getElementById('cdf-s').value=dt.season??'';}}
-    });
-    document.getElementById('cdf-cancel')?.addEventListener('click',()=>{document.getElementById('cal-dt-form').style.display='none';});
-    document.getElementById('cdf-save')?.addEventListener('click',()=>{
-        const y=parseInt(document.getElementById('cdf-y').value)||null;
-        const m=parseInt(document.getElementById('cdf-m').value);
-        const d=parseInt(document.getElementById('cdf-d').value);
-        const h=document.getElementById('cdf-h').value!==''?parseInt(document.getElementById('cdf-h').value):null;
-        const mi=document.getElementById('cdf-mi').value!==''?parseInt(document.getElementById('cdf-mi').value):null;
-        const season=document.getElementById('cdf-s').value.trim()||null;
-        if(!m||!d){toast('월/일은 필수입니다',true);return;}
-        S().currentDT={year:y,month:m,day:d,hour:h,minute:mi,season};
-        calYear=y??calYear;calMonth=m;
-        sortAndAutoCheck();save();injectContext();
-        document.getElementById('cal-dt-form').style.display='none';
-        switchTab('calendar');toast('날짜 설정 완료');
+        cell.addEventListener('click',e=>{
+            e.stopPropagation();
+            const day=+cell.dataset.day;
+            const month=+cell.dataset.month;
+            schedViewDate={month,day};
+            switchTab('schedule');
+        });
     });
 }
 
 // ══════════════════════════════════════════════════════════════
-// TAB 2: SCHEDULE
+// TAB 2: SCHEDULE — date-by-date view
 // ══════════════════════════════════════════════════════════════
+function getScheduleDates() {
+    const d=CD();
+    const dateSet=new Set();
+    d.schedules.forEach(x=>dateSet.add(`${x.year??0}-${x.month}-${x.day}`));
+    return [...dateSet].map(k=>{
+        const parts=k.split('-');
+        return{year:+parts[0]||null,month:+parts[1],day:+parts[2]};
+    }).sort(cmpDate);
+}
+
 function renderSchedule() {
-    const s=S(), cur=s.currentDT, filter=scheduleFilterDay;
-    const filterLabel=filter?`${filter.month}월 ${filter.day}일`:'전체';
-    const list=filter?s.schedules.filter(x=>x.month===filter.month&&x.day===filter.day):s.schedules;
-    const todayI=list.filter(x=>!x.done&&isToday(x,cur));
-    const upI=list.filter(x=>!x.done&&!isToday(x,cur)&&!isPast(x,cur));
-    const pastI=list.filter(x=>x.done||isPast(x,cur));
-    const iH=x=>{
+    const d=CD(),s=S(),cur=s.currentDT;
+    const dates=getScheduleDates();
+
+    // 현재 보는 날짜 결정
+    if(!schedViewDate&&dates.length){
+        // 오늘이나 가장 가까운 미래
+        const future=dates.filter(x=>!isPast(x,cur));
+        schedViewDate=future.length?future[0]:dates[dates.length-1];
+    }
+
+    const sv=schedViewDate;
+    const svItems=sv?d.schedules.filter(x=>x.month===sv.month&&x.day===sv.day&&(x.year??0)===(sv.year??0)):[];
+
+    // 이전/다음 날짜 찾기
+    let prevDate=null,nextDate=null;
+    if(sv&&dates.length){
+        const idx=dates.findIndex(x=>x.month===sv.month&&x.day===sv.day&&(x.year??0)===(sv.year??0));
+        if(idx>0)prevDate=dates[idx-1];
+        if(idx<dates.length-1)nextDate=dates[idx+1];
+    }
+
+    // 아이템 렌더
+    const itemsHTML=svItems.length?svItems.map(x=>{
         const past=isPast(x,cur),today=isToday(x,cur);
-        let cls='',badge='';
-        if(x.done){cls='sch-done';badge='<span class="sch-badge done">완료</span>';}
-        else if(today){cls='sch-today';badge='<span class="sch-badge today">오늘</span>';}
-        else if(past){cls='sch-past';badge='<span class="sch-badge past">경과</span>';}
-        const src=x.source==='manual'?'✏':'◈';
-        return `<div class="sch-item ${cls}" data-id="${x.id}">
-          <label class="sch-chk-wrap"><input type="checkbox" class="sch-cb" data-id="${x.id}" ${x.done?'checked':''}><span class="sch-box"></span></label>
-          <div class="sch-body"><div class="sch-meta"><span class="sch-date">${x.month}/${x.day}</span>${badge}<span class="sch-src">${src}</span></div>
-          <div class="sch-title">${esc(x.title)}</div>${x.note?`<div class="sch-note">${esc(x.note)}</div>`:''}</div>
-          <button class="sch-edit-btn" data-id="${x.id}">✎</button>
-          <button class="sch-del-btn" data-id="${x.id}">✕</button>
+        let cls='sch-card';
+        if(x.done)cls+=' done';
+        else if(today)cls+=' today';
+        else if(past)cls+=' past';
+        const src=x.source==='manual'?'Manual':'Auto';
+        return `<div class="${cls}" data-id="${x.id}">
+          <div class="sch-card-header">
+            <label class="sch-chk-wrap">
+              <input type="checkbox" class="sch-cb" data-id="${x.id}" ${x.done?'checked':''}>
+              <span class="sch-box"></span>
+            </label>
+            <div class="sch-card-body">
+              <div class="sch-card-title">${esc(x.title)}</div>
+              ${x.note?`<div class="sch-card-note">${esc(x.note)}</div>`:''}
+            </div>
+            <div class="sch-card-actions">
+              <span class="sch-src-tag">${src}</span>
+              <button class="sch-edit-btn" data-id="${x.id}">✎</button>
+              <button class="sch-del-btn" data-id="${x.id}">✕</button>
+            </div>
+          </div>
         </div>`;
-    };
-    let lh='';
-    if(todayI.length){lh+='<div class="sch-grp-label">📅 오늘</div>';lh+=todayI.map(iH).join('');}
-    if(upI.length){lh+='<div class="sch-grp-label">⏳ 예정</div>';lh+=upI.map(iH).join('');}
-    if(pastI.length){lh+=`<div class="sch-grp-label dim">✔ 지난 (${pastI.length})</div><div class="sch-past-grp">${pastI.map(iH).join('')}</div>`;}
-    if(!list.length)lh='<div class="rpp-empty">등록된 일정이 없습니다</div>';
+    }).join(''):`<div class="rpp-empty">No schedules for this date</div>`;
+
+    const dateLabel=sv?`${sv.month}/${sv.day}`:'—';
+    const dayLabel=sv?fmtDayName(sv):'';
 
     return `<div class="rpp-sch-wrap">
-  <div class="sch-filter-bar">
-    <span class="sch-filter-label">${esc(filterLabel)}</span>
-    ${filter?'<button class="rpp-btn rpp-btn-xs" id="sch-filter-clear">전체보기</button>':''}
+  <!-- 날짜 네비 -->
+  <div class="sch-date-nav">
+    <button class="rpp-btn rpp-btn-xs sch-nav-btn" id="sch-prev-date" ${!prevDate?'disabled':''}>‹</button>
+    <div class="sch-date-center">
+      <span class="sch-date-label">${dateLabel}</span>
+      <span class="sch-day-label">${dayLabel}</span>
+    </div>
+    <button class="rpp-btn rpp-btn-xs sch-nav-btn" id="sch-next-date" ${!nextDate?'disabled':''}>›</button>
+  </div>
+
+  <!-- 상태 배지 -->
+  <div class="sch-status-row">
+    ${sv&&isToday(sv,cur)?'<span class="sch-status-badge today">TODAY</span>':''}
+    ${sv&&isPast(sv,cur)?'<span class="sch-status-badge past">PAST</span>':''}
     <div class="rpp-spacer"></div>
-    <button class="rpp-btn rpp-btn-xs" id="sch-clear-done">완료 삭제</button>
+    <button class="rpp-btn rpp-btn-xs" id="sch-all-btn">All Dates</button>
+    <button class="rpp-btn rpp-btn-xs" id="sch-sync-btn">⚡ Sync</button>
   </div>
-  <div class="sch-add-wrap">
+
+  <!-- 아이템 목록 -->
+  <div id="sch-items" class="sch-items">${itemsHTML}</div>
+
+  <!-- 추가 폼 -->
+  <div class="sch-add-form">
     <div class="sch-add-row">
-      <input id="sa-m" type="number" class="rpp-inp" placeholder="월" min="1" max="12" style="width:44px">
-      <span class="rpp-sep">월</span>
-      <input id="sa-d" type="number" class="rpp-inp" placeholder="일" min="1" max="31" style="width:44px">
-      <span class="rpp-sep">일</span>
-      <input id="sa-t" type="text" class="rpp-inp" placeholder="일정 제목" style="flex:1">
+      <input id="sa-t" type="text" class="rpp-inp" placeholder="Add schedule..." style="flex:1">
+      <button class="rpp-btn rpp-btn-primary rpp-btn-xs" id="sch-add-btn">+</button>
     </div>
     <div class="sch-add-row">
-      <input id="sa-n" type="text" class="rpp-inp" placeholder="메모 (선택)" style="flex:1">
-      <button class="rpp-btn rpp-btn-primary rpp-btn-xs" id="sch-add-btn">추가</button>
+      <input id="sa-n" type="text" class="rpp-inp" placeholder="Note (optional)" style="flex:1">
     </div>
   </div>
-  <div id="sch-list" class="sch-list">${lh}</div>
+
+  <!-- 전체 목록 (토글) -->
+  <div id="sch-all-wrap" class="sch-all-wrap" style="display:none">
+    <div class="sch-all-header">All Schedules <button class="rpp-btn rpp-btn-xs" id="sch-all-close">✕</button></div>
+    <div id="sch-all-list">${renderAllList()}</div>
+  </div>
 </div>`;
 }
 
+function renderAllList() {
+    const d=CD(),s=S(),cur=s.currentDT;
+    const dates=getScheduleDates();
+    if(!dates.length)return '<div class="rpp-empty">No schedules</div>';
+    return dates.map(dt=>{
+        const items=d.schedules.filter(x=>x.month===dt.month&&x.day===dt.day);
+        return `<div class="all-date-group">
+          <div class="all-date-label" data-month="${dt.month}" data-day="${dt.day}">${dt.month}/${dt.day} ${fmtDayName(dt)}</div>
+          ${items.map(x=>`<div class="all-item ${x.done?'done':''}" data-id="${x.id}">
+            <span class="all-item-dot ${x.done?'dot-done':'dot-upcoming'}"></span>
+            <span class="all-item-title">${esc(x.title)}</span>
+          </div>`).join('')}
+        </div>`;
+    }).join('');
+}
+
 function bindScheduleEvents() {
-    document.getElementById('sch-filter-clear')?.addEventListener('click',()=>{scheduleFilterDay=null;switchTab('schedule');});
-    document.getElementById('sch-clear-done')?.addEventListener('click',()=>{
-        const s=S(),b=s.schedules.length;
-        s.schedules=s.schedules.filter(x=>!x.done);
-        save();injectContext();switchTab('schedule');toast(`${b-s.schedules.length}개 삭제됨`);
+    const d=CD(),s=S(),cur=s.currentDT;
+    const dates=getScheduleDates();
+    const sv=schedViewDate;
+
+    document.getElementById('sch-prev-date')?.addEventListener('click',e=>{
+        e.stopPropagation();
+        if(!sv)return;
+        const idx=dates.findIndex(x=>x.month===sv.month&&x.day===sv.day);
+        if(idx>0){schedViewDate=dates[idx-1];switchTab('schedule');}
     });
-    document.getElementById('sch-add-btn')?.addEventListener('click',doAddSchedule);
-    document.getElementById('sa-t')?.addEventListener('keydown',e=>{if(e.key==='Enter')doAddSchedule();});
-    bindSchListEvents();
+    document.getElementById('sch-next-date')?.addEventListener('click',e=>{
+        e.stopPropagation();
+        if(!sv)return;
+        const idx=dates.findIndex(x=>x.month===sv.month&&x.day===sv.day);
+        if(idx<dates.length-1){schedViewDate=dates[idx+1];switchTab('schedule');}
+    });
+
+    document.getElementById('sch-all-btn')?.addEventListener('click',e=>{
+        e.stopPropagation();
+        const w=document.getElementById('sch-all-wrap');
+        if(w)w.style.display='block';
+    });
+    document.getElementById('sch-all-close')?.addEventListener('click',e=>{
+        e.stopPropagation();
+        const w=document.getElementById('sch-all-wrap');
+        if(w)w.style.display='none';
+    });
+
+    // 전체 목록에서 날짜 클릭
+    document.querySelectorAll('.all-date-label').forEach(el=>{
+        el.addEventListener('click',e=>{
+            e.stopPropagation();
+            schedViewDate={month:+el.dataset.month,day:+el.dataset.day};
+            document.getElementById('sch-all-wrap').style.display='none';
+            switchTab('schedule');
+        });
+    });
+
+    // 동기화
+    document.getElementById('sch-sync-btn')?.addEventListener('click',e=>{
+        e.stopPropagation();
+        doSync(true);
+    });
+
+    // 추가
+    document.getElementById('sch-add-btn')?.addEventListener('click',e=>{
+        e.stopPropagation();
+        doAddSchedule();
+    });
+    document.getElementById('sa-t')?.addEventListener('keydown',e=>{
+        if(e.key==='Enter'){e.stopPropagation();doAddSchedule();}
+    });
+
+    bindSchItemEvents();
 }
 
 function doAddSchedule() {
-    const m=document.getElementById('sa-m')?.value;
-    const d=document.getElementById('sa-d')?.value;
     const t=document.getElementById('sa-t')?.value.trim();
     const n=document.getElementById('sa-n')?.value.trim()||'';
-    if(!m||!d||!t){toast('월, 일, 제목을 입력하세요',true);return;}
-    addSchedule({month:m,day:d,title:t,note:n,source:'manual'});
-    ['sa-m','sa-d','sa-t','sa-n'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
-    renderSchList();toast('일정 추가됨');
+    if(!t){toast('Enter a title',true);return;}
+    const sv=schedViewDate;
+    if(!sv){toast('Select a date first',true);return;}
+    addSchedule({month:sv.month,day:sv.day,title:t,note:n,source:'manual'});
+    document.getElementById('sa-t').value='';
+    document.getElementById('sa-n').value='';
+    switchTab('schedule');
+    toast('Schedule added');
 }
 
-function renderSchList() {
-    const el=document.getElementById('sch-list');if(!el)return;
-    const s=S(),cur=s.currentDT,filter=scheduleFilterDay;
-    const list=filter?s.schedules.filter(x=>x.month===filter.month&&x.day===filter.day):s.schedules;
-    const todayI=list.filter(x=>!x.done&&isToday(x,cur));
-    const upI=list.filter(x=>!x.done&&!isToday(x,cur)&&!isPast(x,cur));
-    const pastI=list.filter(x=>x.done||isPast(x,cur));
-    const iH=x=>{
-        const past=isPast(x,cur),today=isToday(x,cur);
-        let cls='',badge='';
-        if(x.done){cls='sch-done';badge='<span class="sch-badge done">완료</span>';}
-        else if(today){cls='sch-today';badge='<span class="sch-badge today">오늘</span>';}
-        else if(past){cls='sch-past';badge='<span class="sch-badge past">경과</span>';}
-        const src=x.source==='manual'?'✏':'◈';
-        return `<div class="sch-item ${cls}" data-id="${x.id}">
-          <label class="sch-chk-wrap"><input type="checkbox" class="sch-cb" data-id="${x.id}" ${x.done?'checked':''}><span class="sch-box"></span></label>
-          <div class="sch-body"><div class="sch-meta"><span class="sch-date">${x.month}/${x.day}</span>${badge}<span class="sch-src">${src}</span></div>
-          <div class="sch-title">${esc(x.title)}</div>${x.note?`<div class="sch-note">${esc(x.note)}</div>`:''}</div>
-          <button class="sch-edit-btn" data-id="${x.id}">✎</button>
-          <button class="sch-del-btn" data-id="${x.id}">✕</button>
-        </div>`;
-    };
-    let h='';
-    if(todayI.length){h+='<div class="sch-grp-label">📅 오늘</div>';h+=todayI.map(iH).join('');}
-    if(upI.length){h+='<div class="sch-grp-label">⏳ 예정</div>';h+=upI.map(iH).join('');}
-    if(pastI.length){h+=`<div class="sch-grp-label dim">✔ 지난 (${pastI.length})</div><div class="sch-past-grp">${pastI.map(iH).join('')}</div>`;}
-    if(!list.length)h='<div class="rpp-empty">등록된 일정이 없습니다</div>';
-    el.innerHTML=h;
-    bindSchListEvents();
-}
-
-function bindSchListEvents() {
+function bindSchItemEvents() {
     document.querySelectorAll('.sch-cb').forEach(cb=>{
-        cb.addEventListener('change',()=>{toggleDone(cb.dataset.id);renderSchList();});
+        cb.addEventListener('change',e=>{e.stopPropagation();toggleDone(cb.dataset.id);switchTab('schedule');});
     });
     document.querySelectorAll('.sch-del-btn').forEach(b=>{
-        b.addEventListener('click',()=>{removeSchedule(b.dataset.id);renderSchList();});
+        b.addEventListener('click',e=>{e.stopPropagation();removeSchedule(b.dataset.id);switchTab('schedule');});
     });
     document.querySelectorAll('.sch-edit-btn').forEach(b=>{
-        b.addEventListener('click',()=>openSchEdit(b.dataset.id));
+        b.addEventListener('click',e=>{e.stopPropagation();openSchEdit(b.dataset.id);});
     });
 }
 
 function openSchEdit(id) {
     document.querySelectorAll('.sch-edit-form').forEach(e=>e.remove());
-    const x=S().schedules.find(x=>x.id===id);if(!x)return;
+    const x=CD().schedules.find(x=>x.id===id);if(!x)return;
     const form=document.createElement('div');
-    form.className='sch-edit-form';form.id='sef-'+id;
+    form.className='sch-edit-form';
     form.innerHTML=`
-      <div class="sef-row"><input id="sem${id}" type="number" class="rpp-inp" value="${x.month}" style="width:42px" min="1" max="12"><span class="rpp-sep">월</span><input id="sed${id}" type="number" class="rpp-inp" value="${x.day}" style="width:42px" min="1" max="31"><span class="rpp-sep">일</span></div>
-      <div class="sef-row"><input id="set${id}" type="text" class="rpp-inp" value="${esc(x.title)}" style="flex:1"></div>
-      <div class="sef-row"><input id="sen${id}" type="text" class="rpp-inp" value="${esc(x.note)}" placeholder="메모" style="flex:1"></div>
-      <div class="sef-btns">
-        <button class="rpp-btn rpp-btn-primary rpp-btn-xs" id="sef-save-${id}">저장</button>
-        <button class="rpp-btn rpp-btn-xs" id="sef-cancel-${id}">취소</button>
+      <input id="set${id}" type="text" class="rpp-inp" value="${esc(x.title)}" placeholder="Title" style="flex:1;margin-bottom:5px">
+      <input id="sen${id}" type="text" class="rpp-inp" value="${esc(x.note)}" placeholder="Note" style="flex:1;margin-bottom:5px">
+      <div style="display:flex;gap:6px">
+        <button class="rpp-btn rpp-btn-primary rpp-btn-xs" id="sef-save-${id}">Save</button>
+        <button class="rpp-btn rpp-btn-xs" id="sef-cancel-${id}">Cancel</button>
       </div>`;
-    document.querySelector(`.sch-item[data-id="${id}"]`)?.insertAdjacentElement('afterend',form);
-    document.getElementById(`sef-cancel-${id}`)?.addEventListener('click',()=>form.remove());
-    document.getElementById(`sef-save-${id}`)?.addEventListener('click',()=>{
-        const m=parseInt(document.getElementById(`sem${id}`).value);
-        const d=parseInt(document.getElementById(`sed${id}`).value);
+    document.querySelector(`.sch-card[data-id="${id}"]`)?.insertAdjacentElement('afterend',form);
+    document.getElementById(`sef-cancel-${id}`)?.addEventListener('click',e=>{e.stopPropagation();form.remove();});
+    document.getElementById(`sef-save-${id}`)?.addEventListener('click',e=>{
+        e.stopPropagation();
         const t=document.getElementById(`set${id}`).value.trim();
         const n=document.getElementById(`sen${id}`).value.trim();
-        if(!m||!d||!t){toast('월, 일, 제목은 필수입니다',true);return;}
-        const item=S().schedules.find(x=>x.id===id);
-        if(item){item.month=m;item.day=d;item.title=t;item.note=n;}
+        if(!t){toast('Title required',true);return;}
+        const item=CD().schedules.find(x=>x.id===id);
+        if(item){item.title=t;item.note=n;}
         sortAndAutoCheck();save();injectContext();
-        form.remove();renderSchList();toast('수정 완료');
+        form.remove();switchTab('schedule');toast('Updated');
     });
 }
 
 // ══════════════════════════════════════════════════════════════
 // TAB 3: CHARACTER
 // ══════════════════════════════════════════════════════════════
+function getCurrentCharName() {
+    const c=getCtx();
+    const char=c.characters?.[c.characterId];
+    return char?.name||'Current Character';
+}
+
 function renderCharacter() {
-    const s=S();
+    const d=CD();
+    const charName=getCurrentCharName();
     let html='';
-    s.characters.forEach(c=>{
+    d.characters.forEach(c=>{
         html+=`<div class="chr-card" data-id="${c.id}">
-          <div class="chr-card-header"><input type="text" class="rpp-inp chr-name-inp" data-id="${c.id}" value="${esc(c.name)}" placeholder="캐릭터 이름"><button class="chr-del-btn rpp-btn rpp-btn-xs" data-id="${c.id}">삭제</button></div>
-          <div class="chr-fields">${c.fields.map((f,i)=>`<div class="chr-field-row"><input type="text" class="rpp-inp chr-fkey" data-cid="${c.id}" data-idx="${i}" value="${esc(f.key)}" placeholder="항목명" style="width:90px"><span class="rpp-sep">:</span><input type="text" class="rpp-inp chr-fval" data-cid="${c.id}" data-idx="${i}" value="${esc(f.val)}" placeholder="내용" style="flex:1"><button class="chr-field-del rpp-btn rpp-btn-xs" data-cid="${c.id}" data-idx="${i}">−</button></div>`).join('')}</div>
-          <div class="chr-card-footer"><button class="rpp-btn rpp-btn-xs chr-field-add" data-id="${c.id}">+ 항목 추가</button><button class="rpp-btn rpp-btn-primary rpp-btn-xs chr-save-btn" data-id="${c.id}">저장</button></div>
+          <div class="chr-card-header">
+            <input type="text" class="rpp-inp chr-name-inp" data-id="${c.id}" value="${esc(c.name)}" placeholder="Character name">
+            <button class="chr-del-btn rpp-btn rpp-btn-xs" data-id="${c.id}">Delete</button>
+          </div>
+          <div class="chr-fields">
+            ${c.fields.map((f,i)=>`<div class="chr-field-row">
+              <input type="text" class="rpp-inp chr-fkey" data-cid="${c.id}" data-idx="${i}" value="${esc(f.key)}" placeholder="Field" style="width:90px">
+              <span class="rpp-sep">:</span>
+              <input type="text" class="rpp-inp chr-fval" data-cid="${c.id}" data-idx="${i}" value="${esc(f.val)}" placeholder="Value" style="flex:1">
+              <button class="chr-field-del rpp-btn rpp-btn-xs" data-cid="${c.id}" data-idx="${i}">−</button>
+            </div>`).join('')}
+          </div>
+          <div class="chr-card-footer">
+            <button class="rpp-btn rpp-btn-xs chr-field-add" data-id="${c.id}">+ Add field</button>
+            <button class="rpp-btn rpp-btn-primary rpp-btn-xs chr-save-btn" data-id="${c.id}">Save</button>
+          </div>
         </div>`;
     });
-    if(!s.characters.length) html='<div class="rpp-empty">캐릭터가 없습니다</div>';
+    if(!d.characters.length)html='<div class="rpp-empty">No characters</div>';
     return `<div class="rpp-chr-wrap">
-      <div class="chr-top-bar"><input id="chr-new-name" type="text" class="rpp-inp" placeholder="새 캐릭터 이름" style="flex:1"><button class="rpp-btn rpp-btn-primary rpp-btn-xs" id="chr-add-btn">추가</button></div>
+      <div class="chr-context-label">📌 ${esc(charName)}</div>
+      <div class="chr-top-bar">
+        <input id="chr-new-name" type="text" class="rpp-inp" placeholder="New character name" style="flex:1">
+        <button class="rpp-btn rpp-btn-primary rpp-btn-xs" id="chr-add-btn">Add</button>
+      </div>
       <div id="chr-list">${html}</div>
     </div>`;
 }
 
 function bindCharacterEvents() {
-    document.getElementById('chr-add-btn')?.addEventListener('click',()=>{
+    document.getElementById('chr-add-btn')?.addEventListener('click',e=>{
+        e.stopPropagation();
         const name=document.getElementById('chr-new-name').value.trim();
-        if(!name){toast('이름을 입력하세요',true);return;}
-        addCharacter(name);document.getElementById('chr-new-name').value='';switchTab('character');toast('캐릭터 추가됨');
+        if(!name){toast('Enter a name',true);return;}
+        addCharacter(name);document.getElementById('chr-new-name').value='';switchTab('character');toast('Character added');
     });
-    document.getElementById('chr-new-name')?.addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('chr-add-btn')?.click();});
+    document.getElementById('chr-new-name')?.addEventListener('keydown',e=>{if(e.key==='Enter'){e.stopPropagation();document.getElementById('chr-add-btn')?.click();}});
     document.getElementById('chr-list')?.addEventListener('click',e=>{
+        e.stopPropagation();
         const delCard=e.target.closest('.chr-del-btn');
-        if(delCard){removeCharacter(delCard.dataset.id);switchTab('character');toast('삭제됨');return;}
+        if(delCard){removeCharacter(delCard.dataset.id);switchTab('character');toast('Deleted');return;}
         const addField=e.target.closest('.chr-field-add');
-        if(addField){const s=S();const c=s.characters.find(x=>x.id===addField.dataset.id);if(c){c.fields.push({key:'',val:''});save();switchTab('character');}return;}
+        if(addField){const d=CD();const c=d.characters.find(x=>x.id===addField.dataset.id);if(c){c.fields.push({key:'',val:''});save();switchTab('character');}return;}
         const delField=e.target.closest('.chr-field-del');
-        if(delField){const s=S();const c=s.characters.find(x=>x.id===delField.dataset.cid);if(c){c.fields.splice(+delField.dataset.idx,1);save();injectContext();switchTab('character');}return;}
+        if(delField){const d=CD();const c=d.characters.find(x=>x.id===delField.dataset.cid);if(c){c.fields.splice(+delField.dataset.idx,1);save();injectContext();switchTab('character');}return;}
         const sv=e.target.closest('.chr-save-btn');
         if(sv){
-            const id=sv.dataset.id;const s=S();const c=s.characters.find(x=>x.id===id);if(!c)return;
+            const id=sv.dataset.id;const d=CD();const c=d.characters.find(x=>x.id===id);if(!c)return;
             const nameEl=document.querySelector(`.chr-name-inp[data-id="${id}"]`);if(nameEl)c.name=nameEl.value.trim();
             const keys=document.querySelectorAll(`.chr-fkey[data-cid="${id}"]`);
             const vals=document.querySelectorAll(`.chr-fval[data-cid="${id}"]`);
-            c.fields=[];keys.forEach((k,i)=>{c.fields.push({key:k.value.trim(),val:vals[i].value.trim()});});
-            c.fields=c.fields.filter(f=>f.key||f.val);save();injectContext();toast('저장됨');
+            c.fields=[];keys.forEach((k,i)=>c.fields.push({key:k.value.trim(),val:vals[i].value.trim()}));
+            c.fields=c.fields.filter(f=>f.key||f.val);
+            save();injectContext();toast('Saved');
         }
     });
 }
@@ -562,37 +797,49 @@ function bindCharacterEvents() {
 // TAB 4: LORE
 // ══════════════════════════════════════════════════════════════
 function renderLore() {
-    const s=S();
+    const d=CD();
+    const charName=getCurrentCharName();
     let html='';
-    s.loreEntries.forEach(e=>{
+    d.loreEntries.forEach(e=>{
         html+=`<div class="lore-card" data-id="${e.id}">
-          <div class="lore-card-header"><input type="text" class="rpp-inp lore-title-inp" data-id="${e.id}" value="${esc(e.title)}" placeholder="제목" style="flex:1"><button class="lore-del-btn rpp-btn rpp-btn-xs" data-id="${e.id}">삭제</button></div>
-          <textarea class="rpp-textarea lore-content" data-id="${e.id}" placeholder="내용 입력...">${esc(e.content)}</textarea>
-          <div class="lore-card-footer"><button class="rpp-btn rpp-btn-primary rpp-btn-xs lore-save-btn" data-id="${e.id}">저장</button></div>
+          <div class="lore-card-header">
+            <input type="text" class="rpp-inp lore-title-inp" data-id="${e.id}" value="${esc(e.title)}" placeholder="Title" style="flex:1">
+            <button class="lore-del-btn rpp-btn rpp-btn-xs" data-id="${e.id}">Delete</button>
+          </div>
+          <textarea class="rpp-textarea lore-content" data-id="${e.id}" placeholder="Content...">${esc(e.content)}</textarea>
+          <div class="lore-card-footer">
+            <button class="rpp-btn rpp-btn-primary rpp-btn-xs lore-save-btn" data-id="${e.id}">Save</button>
+          </div>
         </div>`;
     });
-    if(!s.loreEntries.length) html='<div class="rpp-empty">로어 항목이 없습니다</div>';
+    if(!d.loreEntries.length)html='<div class="rpp-empty">No lore entries</div>';
     return `<div class="rpp-lore-wrap">
-      <div class="lore-top-bar"><input id="lore-new-title" type="text" class="rpp-inp" placeholder="제목" style="flex:1"><button class="rpp-btn rpp-btn-primary rpp-btn-xs" id="lore-add-btn">추가</button></div>
+      <div class="chr-context-label">📌 ${esc(charName)}</div>
+      <div class="lore-top-bar">
+        <input id="lore-new-title" type="text" class="rpp-inp" placeholder="Title" style="flex:1">
+        <button class="rpp-btn rpp-btn-primary rpp-btn-xs" id="lore-add-btn">Add</button>
+      </div>
       <div id="lore-list">${html}</div>
     </div>`;
 }
 
 function bindLoreEvents() {
-    document.getElementById('lore-add-btn')?.addEventListener('click',()=>{
+    document.getElementById('lore-add-btn')?.addEventListener('click',e=>{
+        e.stopPropagation();
         const title=document.getElementById('lore-new-title').value.trim();
-        addLore(title,'');document.getElementById('lore-new-title').value='';switchTab('lore');toast('항목 추가됨');
+        addLore(title,'');document.getElementById('lore-new-title').value='';switchTab('lore');toast('Entry added');
     });
-    document.getElementById('lore-new-title')?.addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('lore-add-btn')?.click();});
+    document.getElementById('lore-new-title')?.addEventListener('keydown',e=>{if(e.key==='Enter'){e.stopPropagation();document.getElementById('lore-add-btn')?.click();}});
     document.getElementById('lore-list')?.addEventListener('click',e=>{
+        e.stopPropagation();
         const del=e.target.closest('.lore-del-btn');
-        if(del){removeLore(del.dataset.id);switchTab('lore');toast('삭제됨');return;}
+        if(del){removeLore(del.dataset.id);switchTab('lore');toast('Deleted');return;}
         const sv=e.target.closest('.lore-save-btn');
         if(sv){
             const id=sv.dataset.id;
             const title=document.querySelector(`.lore-title-inp[data-id="${id}"]`)?.value.trim()||'';
             const content=document.querySelector(`.lore-content[data-id="${id}"]`)?.value.trim()||'';
-            updateLore(id,title,content);toast('저장됨');
+            updateLore(id,title,content);toast('Saved');
         }
     });
 }
@@ -602,59 +849,180 @@ function bindLoreEvents() {
 // ══════════════════════════════════════════════════════════════
 function renderSettings() {
     const s=S();
-    const profiles=getConnectionProfiles();
+    const profiles=getCtx().extensionSettings?.connectionManager?.profiles??[];
     const profileOpts=profiles.map(p=>`<option value="${esc(p.id)}" ${p.id===s.syncProfileId?'selected':''}>${esc(p.name)}</option>`).join('');
-    const previewText=buildInjectText()||'(비어있음)';
-    return `<div class="rpp-ext-settings">
+    const previewText=buildInjectText()||'(empty)';
+
+    // 백업 슬롯
+    const backupHTML=s.backupSlots.length?s.backupSlots.map(slot=>`
+      <div class="backup-slot" data-id="${slot.id}">
+        <div class="backup-slot-name" contenteditable="true" data-id="${slot.id}">${esc(slot.name)}</div>
+        <div class="backup-slot-date">${new Date(slot.savedAt).toLocaleString()}</div>
+        <div class="backup-slot-btns">
+          <button class="rpp-btn rpp-btn-xs backup-restore" data-id="${slot.id}">Restore</button>
+          <button class="rpp-btn rpp-btn-xs backup-delete" data-id="${slot.id}">Delete</button>
+        </div>
+      </div>`).join(''):'<div class="rpp-empty">No backup slots</div>';
+
+    // 동기화 상태
+    const syncStateLabel=s.syncMode==='auto'?'🟢 Auto sync active':s.syncMode==='manual'?'🔵 Manual only':'🔴 Sync off';
+
+    return `<div class="rpp-settings-wrap">
+
+  <!-- 날짜 동기화 -->
   <div class="rpp-es-section">
-    <div class="rpp-es-title">🔗 동기화 (아웃풋 → 스케쥴러)</div>
-    <div class="rpp-es-row"><label class="rpp-es-label">연결 프로필</label>
-      <select id="rpp-es-profile" class="rpp-es-select"><option value="">메인 API 따라가기</option>${profileOpts}</select></div>
-    <div class="rpp-es-row"><label class="rpp-es-label">동기화 방식</label>
-      <div class="rpp-es-radio-group">
-        <label class="rpp-es-radio"><input type="radio" name="rpp-sync-mode" value="auto" ${s.autoSync?'checked':''}><span>자동 (메시지마다)</span></label>
-        <label class="rpp-es-radio"><input type="radio" name="rpp-sync-mode" value="manual" ${!s.autoSync?'checked':''}><span>수동 (⚡ 버튼)</span></label>
-      </div>
+    <div class="rpp-es-title">🕐 Date Sync</div>
+    <div class="cal-dt-display" style="margin-bottom:10px">
+      ${S().currentDT?`<div class="cal-dt-date">${fmtDate(S().currentDT)} <span class="cal-dt-day">${fmtDayName(S().currentDT)}</span></div>${fmtTime(S().currentDT)?`<div class="cal-dt-time">${fmtTime(S().currentDT)}</div>`:''}`:
+      '<div class="cal-dt-unset">No date synced</div>'}
+    </div>
+    <div class="sync-mode-btns">
+      <button id="sync-auto-btn" class="rpp-btn rpp-btn-xs ${s.syncMode==='auto'?'active-sync':''}">🟢 Auto</button>
+      <button id="sync-manual-btn" class="rpp-btn rpp-btn-xs ${s.syncMode==='manual'?'active-sync':''}">🔵 Sync once</button>
+      <button id="sync-off-btn" class="rpp-btn rpp-btn-xs ${s.syncMode==='off'?'active-sync-off':''}">🔴 Off</button>
+    </div>
+    <div class="rpp-es-hint" style="margin-top:6px">${syncStateLabel}</div>
+  </div>
+
+  <!-- 연결 프로필 -->
+  <div class="rpp-es-section">
+    <div class="rpp-es-title">🔗 Connection Profile (for sync)</div>
+    <select id="rpp-es-profile" class="rpp-es-select">
+      <option value="">Follow main API</option>
+      ${profileOpts}
+    </select>
+  </div>
+
+  <!-- 롤플 반영 -->
+  <div class="rpp-es-section">
+    <div class="rpp-es-title">📤 RP Injection</div>
+    <div class="rpp-es-row">
+      <span class="rpp-es-label">Inject to context</span>
+      <button id="rpp-inject-toggle-settings" class="rpp-btn rpp-btn-xs ${s.injectEnabled?'inject-on':'inject-off'}">
+        ${s.injectEnabled?'ON ✓':'OFF ✗'}
+      </button>
+    </div>
+    <div class="rpp-es-row" style="margin-top:6px">
+      <span class="rpp-es-label">Depth</span>
+      <input type="number" id="rpp-es-depth" class="rpp-es-num" value="${s.injectDepth}" min="0" max="10">
+      <span class="rpp-es-hint">0=system end, 2=before last msg</span>
     </div>
   </div>
-  <div class="rpp-es-section">
-    <div class="rpp-es-title">📤 롤플 반영 (스케쥴러 → Context)</div>
-    <div class="rpp-es-row"><label class="rpp-es-label">주입 활성화</label>
-      <label class="rpp-es-toggle-wrap"><input type="checkbox" id="rpp-es-inject" ${s.injectEnabled?'checked':''}><span class="rpp-es-toggle"></span></label></div>
-    <div class="rpp-es-row"><label class="rpp-es-label">삽입 depth</label>
-      <input type="number" id="rpp-es-depth" class="rpp-es-num" value="${s.injectDepth}" min="0" max="10">
-      <span class="rpp-es-hint">0=시스템끝, 2=마지막 앞</span></div>
-  </div>
+
+  <!-- 주입 미리보기 -->
   <div class="rpp-es-section rpp-es-preview">
-    <div class="rpp-es-title">👁 주입 내용 미리보기</div>
+    <div class="rpp-es-title">👁 Injection Preview</div>
     <pre class="rpp-es-pre">${esc(previewText)}</pre>
   </div>
+
+  <!-- 백업 -->
+  <div class="rpp-es-section">
+    <div class="rpp-es-title">💾 Backup</div>
+    <div class="backup-btn-row">
+      <button class="rpp-btn rpp-btn-xs" id="backup-create-btn">+ Save slot</button>
+      <button class="rpp-btn rpp-btn-xs" id="backup-export-btn">📤 Export file</button>
+      <label class="rpp-btn rpp-btn-xs" id="backup-import-label">📥 Import file<input type="file" id="backup-import-input" accept=".json" style="display:none"></label>
+      <button class="rpp-btn rpp-btn-xs backup-danger" id="backup-clear-btn">🗑 Clear all</button>
+    </div>
+    <div id="backup-slots">${backupHTML}</div>
+  </div>
+
 </div>`;
 }
 
 function bindSettingsEvents() {
-    document.getElementById('rpp-es-profile')?.addEventListener('change',e=>{S().syncProfileId=e.target.value||null;save();});
-    document.querySelectorAll('input[name="rpp-sync-mode"]').forEach(r=>{
-        r.addEventListener('change',()=>{S().autoSync=r.value==='auto';save();updateSyncBadge();});
-    });
-    document.getElementById('rpp-es-inject')?.addEventListener('change',e=>{
-        S().injectEnabled=e.target.checked;save();injectContext();updateInjectBadge();
-    });
-    document.getElementById('rpp-es-depth')?.addEventListener('change',e=>{
-        S().injectDepth=parseInt(e.target.value)||2;save();injectContext();
-    });
-}
+    const s=S();
 
-// ─── 배지 상태 ───────────────────────────────────────────────
-function updateSyncBadge() {
-    const btn=document.getElementById('rpp-sync-btn');if(!btn)return;
-    btn.classList.toggle('manual-mode',!S().autoSync);
-    btn.title=S().autoSync?'자동 동기화 켜짐 (클릭: 지금 동기화)':'수동 동기화 — 클릭해서 파싱';
-}
-function updateInjectBadge() {
-    const btn=document.getElementById('rpp-inject-status');if(!btn)return;
-    btn.classList.toggle('off',!S().injectEnabled);
-    btn.title=S().injectEnabled?'롤플 반영 켜짐 (클릭: 끄기)':'롤플 반영 꺼짐 (클릭: 켜기)';
+    // 동기화 모드
+    document.getElementById('sync-auto-btn')?.addEventListener('click',e=>{
+        e.stopPropagation();s.syncMode='auto';save();switchTab('settings');toast('Auto sync enabled');
+    });
+    document.getElementById('sync-manual-btn')?.addEventListener('click',e=>{
+        e.stopPropagation();
+        const{dateUpdated,added}=parseAllMessages();
+        let msg='Synced';
+        if(dateUpdated&&added)msg=`Date updated + ${added} schedules found`;
+        else if(dateUpdated)msg='Date updated';
+        else if(added)msg=`${added} schedules found`;
+        else msg='Nothing new found';
+        // ST 알림 또는 toast
+        if(window.toastr)window.toastr.info(msg,'RP Planner Sync');
+        else alert(msg);
+        switchTab('settings');
+    });
+    document.getElementById('sync-off-btn')?.addEventListener('click',e=>{
+        e.stopPropagation();s.syncMode='off';save();switchTab('settings');toast('Sync disabled');
+    });
+
+    // 연결 프로필
+    document.getElementById('rpp-es-profile')?.addEventListener('change',e=>{
+        e.stopPropagation();s.syncProfileId=e.target.value||null;save();
+    });
+
+    // 주입 토글
+    document.getElementById('rpp-inject-toggle-settings')?.addEventListener('click',e=>{
+        e.stopPropagation();
+        s.injectEnabled=!s.injectEnabled;save();injectContext();updateHeaderBtns();switchTab('settings');
+    });
+
+    // depth
+    document.getElementById('rpp-es-depth')?.addEventListener('change',e=>{
+        e.stopPropagation();s.injectDepth=parseInt(e.target.value)||2;save();injectContext();
+    });
+
+    // 백업 슬롯 생성
+    document.getElementById('backup-create-btn')?.addEventListener('click',e=>{
+        e.stopPropagation();
+        const slot=createBackupSlot(`Backup ${new Date().toLocaleString()}`);
+        toast(`Saved: ${slot.name}`);switchTab('settings');
+    });
+
+    // 파일 내보내기
+    document.getElementById('backup-export-btn')?.addEventListener('click',e=>{
+        e.stopPropagation();exportToFile();toast('File exported');
+    });
+
+    // 파일 불러오기
+    document.getElementById('backup-import-input')?.addEventListener('change',async e=>{
+        e.stopPropagation();
+        const file=e.target.files[0];if(!file)return;
+        try{
+            await importFromFile(file);
+            toast('Imported successfully');switchTab('settings');
+        }catch(err){toast('Import failed: '+err.message,true);}
+    });
+
+    // 전체 삭제
+    document.getElementById('backup-clear-btn')?.addEventListener('click',e=>{
+        e.stopPropagation();
+        if(confirm('Clear ALL data? This cannot be undone.')){
+            clearAllData();toast('All data cleared');switchTab('settings');
+        }
+    });
+
+    // 슬롯 복원/삭제
+    document.getElementById('backup-slots')?.addEventListener('click',e=>{
+        e.stopPropagation();
+        const restore=e.target.closest('.backup-restore');
+        if(restore){
+            if(confirm('Restore this backup? Current data will be overwritten.')){
+                restoreBackupSlot(restore.dataset.id);toast('Restored');switchTab('settings');
+            }
+            return;
+        }
+        const del=e.target.closest('.backup-delete');
+        if(del){deleteBackupSlot(del.dataset.id);switchTab('settings');return;}
+    });
+
+    // 슬롯 이름 편집
+    document.querySelectorAll('.backup-slot-name[contenteditable]').forEach(el=>{
+        el.addEventListener('blur',e=>{
+            e.stopPropagation();
+            const id=el.dataset.id;
+            const slot=s.backupSlots.find(x=>x.id===id);
+            if(slot){slot.name=el.textContent.trim()||slot.name;save();}
+        });
+    });
 }
 
 // ─── 토스트 ──────────────────────────────────────────────────
@@ -662,7 +1030,28 @@ let _toastTimer;
 function toast(msg,err=false) {
     const el=document.getElementById('rpp-toast');if(!el)return;
     el.textContent=msg;el.className=err?'rpp-toast-err show':'show';
-    clearTimeout(_toastTimer);_toastTimer=setTimeout(()=>el.className='',2600);
+    clearTimeout(_toastTimer);_toastTimer=setTimeout(()=>el.className='',2800);
+}
+
+// ─── 동기화 실행 ─────────────────────────────────────────────
+function doSync(showAlert=false) {
+    const{dateUpdated,added}=parseAllMessages();
+    let msg='Nothing new found';
+    if(dateUpdated&&added)msg=`Date updated + ${added} schedules found`;
+    else if(dateUpdated)msg='Date updated';
+    else if(added)msg=`${added} schedules found`;
+    if(showAlert){
+        if(window.toastr)window.toastr.info(msg,'RP Planner');
+        else alert(msg);
+    } else {
+        toast(msg);
+    }
+    if(panelOpen){
+        if(activeTab==='calendar')switchTab('calendar');
+        else if(activeTab==='schedule')switchTab('schedule');
+    }
+    const badge=document.getElementById('rpp-badge');
+    if(badge&&added)badge.style.display='flex';
 }
 
 // ─── 패널 열기/닫기 ──────────────────────────────────────────
@@ -674,30 +1063,31 @@ function openPanel() {
     wrap.id='rpp-wrapper';wrap.innerHTML=getPanelHTML();
     document.body.appendChild(wrap);
 
-    document.querySelectorAll('.rpp-tab[data-tab]').forEach(b=>{b.addEventListener('click',()=>switchTab(b.dataset.tab));});
-    document.getElementById('rpp-close')?.addEventListener('click',closePanel);
+    document.querySelectorAll('.rpp-tab[data-tab]').forEach(b=>{
+        b.addEventListener('click',e=>{e.stopPropagation();switchTab(b.dataset.tab);});
+    });
+    document.getElementById('rpp-close')?.addEventListener('click',e=>{e.stopPropagation();closePanel();});
 
-    document.getElementById('rpp-sync-btn')?.addEventListener('click',()=>{
-        const {dateUpdated,added}=parseLastMessage();
-        if(activeTab==='calendar')switchTab('calendar');
-        else if(activeTab==='schedule')renderSchList();
-        if(dateUpdated&&added)toast(`날짜 갱신 + ${added}개 감지`);
-        else if(dateUpdated)toast('날짜/시간 갱신됨');
-        else if(added)toast(`${added}개 일정 감지됨`);
-        else toast('감지된 정보 없음');
+    // ⚡ 수동 동기화
+    document.getElementById('rpp-sync-btn')?.addEventListener('click',e=>{
+        e.stopPropagation();doSync(true);
     });
 
-    document.getElementById('rpp-inject-status')?.addEventListener('click',()=>{
+    // 📤 주입 토글
+    document.getElementById('rpp-inject-toggle')?.addEventListener('click',e=>{
+        e.stopPropagation();
         const s=S();s.injectEnabled=!s.injectEnabled;
-        save();injectContext();updateInjectBadge();
-        toast(s.injectEnabled?'롤플 반영 켜짐':'롤플 반영 꺼짐');
+        save();injectContext();updateHeaderBtns();
+        toast(s.injectEnabled?'RP Injection ON':'RP Injection OFF');
     });
 
-    updateSyncBadge();updateInjectBadge();
-    panelOpen=true;switchTab('calendar');
+    panelOpen=true;
+    switchTab('calendar');
 
     setTimeout(()=>{
         _outsideH=e=>{
+            // DOM에서 제거된 요소 클릭은 무시 (재렌더링 버그 방지)
+            if(!document.body.contains(e.target))return;
             const panel=document.getElementById('rpp-panel');
             const btn=document.getElementById('rpp-toolbar-btn');
             if(panel&&!panel.contains(e.target)&&btn&&!btn.contains(e.target))closePanel();
@@ -712,59 +1102,46 @@ function closePanel() {
     panelOpen=false;
 }
 
+// ─── 메시지 수신 훅 ──────────────────────────────────────────
+function onMessageReceived() {
+    const s=S();
+    if(s.syncMode!=='auto')return;
+    parseLastOnly();
+    if(panelOpen){
+        if(activeTab==='calendar')switchTab('calendar');
+        else if(activeTab==='schedule')switchTab('schedule');
+    }
+}
+
+// ─── 캐릭터 전환 훅 ──────────────────────────────────────────
+function onCharacterChanged() {
+    schedViewDate=null;
+    if(panelOpen)switchTab(activeTab);
+}
+
 // ─── Extensions 설정 탭 등록 ─────────────────────────────────
 function registerSettingsUI() {
-    const s=S();
-    const profiles=getConnectionProfiles();
-    const profileOpts=profiles.map(p=>`<option value="${esc(p.id)}" ${p.id===s.syncProfileId?'selected':''}>${esc(p.name)}</option>`).join('');
-    const html=`<div id="rpp-ext-settings-block" class="rpp-ext-block">
+    const html=`<div id="rpp-ext-block" class="rpp-ext-block">
       <div class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
           <b>RP Planner</b>
           <div class="inline-drawer-icon fa-solid fa-circle-chevron-down"></div>
         </div>
         <div class="inline-drawer-content">
-          <div class="rpp-ext-inner">
-            <div class="rpp-ext-row"><label>연결 프로필 (동기화용)</label>
-              <select id="rpp-settings-profile" class="text_pole"><option value="">메인 API 따라가기</option>${profileOpts}</select></div>
-            <div class="rpp-ext-row"><label>동기화 방식</label>
-              <select id="rpp-settings-sync" class="text_pole">
-                <option value="auto" ${s.autoSync?'selected':''}>자동 (메시지마다)</option>
-                <option value="manual" ${!s.autoSync?'selected':''}>수동 (⚡ 버튼)</option>
-              </select></div>
-            <div class="rpp-ext-row"><label>롤플 반영 (주입)</label><input type="checkbox" id="rpp-settings-inject" ${s.injectEnabled?'checked':''}></div>
-            <div class="rpp-ext-row"><label>삽입 depth</label><input type="number" id="rpp-settings-depth" class="text_pole" style="width:60px" min="0" max="10" value="${s.injectDepth}"></div>
+          <div style="padding:8px;font-size:0.82rem;color:var(--SmartThemeBodyColor,#ccc)">
+            Open the panel (📆) to access full settings, backup, and sync options.
           </div>
         </div>
       </div>
     </div>`;
     const container=document.getElementById('extensions_settings2')??document.getElementById('extensions_settings');
-    if(container){
-        container.insertAdjacentHTML('beforeend',html);
-        document.getElementById('rpp-settings-profile')?.addEventListener('change',e=>{S().syncProfileId=e.target.value||null;save();});
-        document.getElementById('rpp-settings-sync')?.addEventListener('change',e=>{S().autoSync=e.target.value==='auto';save();updateSyncBadge();});
-        document.getElementById('rpp-settings-inject')?.addEventListener('change',e=>{S().injectEnabled=e.target.checked;save();injectContext();updateInjectBadge();});
-        document.getElementById('rpp-settings-depth')?.addEventListener('change',e=>{S().injectDepth=parseInt(e.target.value)||2;save();injectContext();});
-    }
-}
-
-// ─── 메시지 수신 훅 ──────────────────────────────────────────
-function onMessageReceived() {
-    if(!S().autoSync)return;
-    const {dateUpdated,added}=parseLastMessage();
-    if(panelOpen&&(dateUpdated||added)){
-        if(activeTab==='calendar')switchTab('calendar');
-        else if(activeTab==='schedule')renderSchList();
-        if(added)toast(`${added}개 일정 감지됨`);
-        if(dateUpdated)toast(added?`날짜 갱신 + ${added}개`:'날짜/시간 갱신됨');
-    }
-    if(added){const badge=document.getElementById('rpp-badge');if(badge)badge.style.display='flex';}
+    container?.insertAdjacentHTML('beforeend',html);
 }
 
 // ─── 초기화 ──────────────────────────────────────────────────
 async function init() {
-    ctx = SillyTavern.getContext();
-    if(!ctx.extensionSettings[EXT]) ctx.extensionSettings[EXT]=structuredClone(DEFAULTS);
+    ctx=SillyTavern.getContext();
+    if(!ctx.extensionSettings[EXT])ctx.extensionSettings[EXT]=structuredClone(GLOBAL_DEFAULTS);
 
     const btnHTML=`<div id="rpp-toolbar-btn" class="rpp-toolbar-btn" title="RP Planner">
       <span>📆</span><span id="rpp-badge" style="display:none" class="rpp-badge-dot"></span>
@@ -778,14 +1155,16 @@ async function init() {
         panelOpen?closePanel():openPanel();
     });
 
-    ctx.eventSource.on(event_types.MESSAGE_RECEIVED, onMessageReceived);
+    ctx.eventSource.on(event_types.MESSAGE_RECEIVED,onMessageReceived);
+    ctx.eventSource.on(event_types.CHAT_CHANGED,onCharacterChanged);
+    ctx.eventSource.on(event_types.CHARACTER_EDITED,onCharacterChanged);
 
     registerSettingsUI();
     injectContext();
-    console.log(LOG,'v4 loaded');
+    console.log(LOG,'v5 loaded');
 }
 
 jQuery(async()=>{
-    const context = SillyTavern.getContext();
-    context.eventSource.on(event_types.APP_READY, async()=>{ await init(); });
+    const context=SillyTavern.getContext();
+    context.eventSource.on(event_types.APP_READY,async()=>{await init();});
 });
