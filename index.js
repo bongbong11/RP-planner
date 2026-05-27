@@ -203,7 +203,21 @@ function buildInjectText() {
     const upcoming=d.schedules.filter(x=>!x.done&&(!cur||!isPast(x,cur))).slice(0,s.maxUpcoming??20);
     if(upcoming.length){
         lines.push('[RP Upcoming Schedule:');
-        upcoming.forEach(x=>{const note=x.note?` (${x.note})`:'';lines.push(`  - ${x.month}/${x.day}: ${x.title}${note}`);});
+        // 연속된 같은 제목 묶기
+        const groups=[];
+        for(const x of upcoming){
+            const last=groups[groups.length-1];
+            if(last&&last.title===x.title&&last.note===(x.note||'')&&last.month===x.month&&x.day===last.endDay+1){
+                last.endDay=x.day;
+            } else {
+                groups.push({month:x.month,day:x.day,endDay:x.day,title:x.title,note:x.note||''});
+            }
+        }
+        groups.forEach(g=>{
+            const dateStr=g.day===g.endDay?`${g.month}/${g.day}`:`${g.month}/${g.day}~${g.endDay}`;
+            const note=g.note?` (${g.note})`:'';
+            lines.push(`  - ${dateStr}: ${g.title}${note}`);
+        });
         lines.push(']');
     }
     const past=d.schedules.filter(x=>x.done||(cur&&isPast(x,cur))).slice(-(s.maxPast??10));
@@ -232,7 +246,128 @@ function injectContext() {
     c.setExtensionPrompt?.(INJECT_KEY,buildInjectText(),1,s.injectDepth);
 }
 
-// ─── 전체 채팅 파싱 ──────────────────────────────────────────
+// ─── AI 스캔으로 일정 파싱 ───────────────────────────────────
+async function aiScanSchedules(text) {
+    const s=S();
+    const profileId=s.syncProfileId;
+    const c=getCtx();
+
+    const systemPrompt=`You are a schedule extraction assistant. Extract ONLY real scheduled events/appointments from the text. 
+Ignore: dialogue, narrative prose, character descriptions, weather, emotions, actions.
+Return ONLY a JSON array. No explanation, no markdown, no extra text.
+Format: [{"year":2027,"month":5,"day":2,"dayEnd":4,"title":"Event title","note":"optional note"}]
+- year: number or null if not mentioned
+- dayEnd: only if date range (e.g. May 2-4), otherwise omit
+- note: location, details in parentheses, or null
+- title: clean event name only, no date prefix, no markdown
+If no schedules found, return []`;
+
+    const messages=[{role:'user',content:`Extract schedules from this text:\n\n${text}`}];
+
+    try {
+        let response;
+        if(profileId&&c.ConnectionManagerRequestService){
+            response=await c.ConnectionManagerRequestService.sendRequest(
+                profileId,messages,1500,
+                {stream:false,extractData:true,includePreset:false,includeInstruct:false,systemPrompt}
+            );
+        } else {
+            // fallback: generateRaw
+            const result=await c.generateRaw({systemPrompt,prompt:text,streaming:false});
+            response=result;
+        }
+
+        // 응답 텍스트 추출
+        let raw='';
+        if(typeof response==='string') raw=response;
+        else if(response?.choices?.[0]?.message?.content) raw=response.choices[0].message.content;
+        else if(response?.content?.[0]?.text) raw=response.content[0].text;
+        else if(response?.content) raw=response.content;
+
+        // JSON 파싱
+        const clean=raw.replace(/```json|```/g,'').trim();
+        const parsed=JSON.parse(clean);
+        if(!Array.isArray(parsed)) return [];
+        return parsed;
+    } catch(err) {
+        console.error('[RPPlanner] AI scan error:', err);
+        return null; // null = 에러
+    }
+}
+
+// 파싱 결과를 스케쥴에 등록 (날짜 범위 펼치기 포함)
+function applyParsedSchedules(parsed) {
+    const d=CD(), s=S();
+    const yr=s.currentDT?.year??null;
+    let added=0;
+    for(const f of parsed) {
+        if(!f.month||!f.day) continue;
+        const startDay=+f.day;
+        const endDay=f.dayEnd?+f.dayEnd:startDay;
+        const year=f.year??yr;
+        for(let day=startDay;day<=endDay;day++){
+            if(!d.schedules.some(x=>x.month===+f.month&&x.day===day&&x.title===f.title)){
+                d.schedules.push({
+                    id:uid(),
+                    month:+f.month,
+                    day,
+                    year,
+                    title:(f.title||'').trim(),
+                    note:(f.note||'').trim(),
+                    done:false,
+                    source:'ai',
+                    createdAt:Date.now(),
+                });
+                added++;
+            }
+        }
+    }
+    if(added){sortAndAutoCheck();save();injectContext();}
+    return added;
+}
+
+// txt/json 파일 불러오기
+async function importScheduleFile(file) {
+    return new Promise((resolve,reject)=>{
+        const reader=new FileReader();
+        reader.onload=e=>{
+            try{
+                const text=e.target.result.trim();
+                const d=CD(), s=S();
+                const yr=s.currentDT?.year??null;
+                let added=0;
+
+                // JSON 형식 시도
+                if(text.startsWith('[')||text.startsWith('{')){
+                    const parsed=JSON.parse(text);
+                    const arr=Array.isArray(parsed)?parsed:[parsed];
+                    added=applyParsedSchedules(arr);
+                } else {
+                    // txt 형식: 5/2 : 제목 / 노트  또는  5/2-4 : 제목
+                    const lines=text.split('\n');
+                    const parsed=[];
+                    for(const line of lines){
+                        const l=line.trim();
+                        if(!l||l.startsWith('#'))continue;
+                        // 패턴: M/D 또는 M/D-D : 제목 / 노트
+                        const m=l.match(/^(\d{1,2})\/(\d{1,2})(?:-(\d{1,2}))?\s*[:：]\s*(.+)/);
+                        if(!m)continue;
+                        const [,mo,d1,d2,rest]=m;
+                        const parts=rest.split('/');
+                        const title=parts[0].trim();
+                        const note=parts[1]?.trim()||'';
+                        parsed.push({month:+mo,day:+d1,dayEnd:d2?+d2:undefined,title,note,year:yr});
+                    }
+                    added=applyParsedSchedules(parsed);
+                }
+                resolve(added);
+            } catch(err){reject(err);}
+        };
+        reader.onerror=reject;
+        reader.readAsText(file);
+    });
+}
+
 function parseAllMessages() {
     const c=getCtx();
     const chat=c.chat;
@@ -610,6 +745,24 @@ function renderSchedule() {
     </div>
   </div>
 
+  <!-- 일정 불러오기 -->
+  <div class="sch-import-section">
+    <div class="sch-import-title">📥 일정 불러오기</div>
+    <div class="sch-import-btns">
+      <label class="rpp-btn rpp-btn-xs sch-import-file-btn">
+        📄 파일 불러오기
+        <input type="file" id="sch-file-input" accept=".txt,.json" style="display:none">
+      </label>
+      <button class="rpp-btn rpp-btn-xs" id="sch-ai-scan-btn">🔍 RP에서 AI 스캔</button>
+    </div>
+    <div class="sch-import-hint">
+      txt: <code>5/2 : Rookie minicamp / Pittsburgh facility</code><br>
+      범위: <code>5/2-4 : Rookie minicamp</code><br>
+      json: <code>[{"month":5,"day":2,"title":"제목","note":"노트"}]</code>
+    </div>
+    <div id="sch-scan-status" class="sch-scan-status" style="display:none"></div>
+  </div>
+
   <!-- 전체 목록 (토글) -->
   <div id="sch-all-wrap" class="sch-all-wrap" style="display:none">
     <div class="sch-all-header">All Schedules <button class="rpp-btn rpp-btn-xs" id="sch-all-close">✕</button></div>
@@ -673,10 +826,50 @@ function bindScheduleEvents() {
         });
     });
 
-    // 동기화
-    document.getElementById('sch-sync-btn')?.addEventListener('click',e=>{
+    // 파일 불러오기
+    document.getElementById('sch-file-input')?.addEventListener('change',async e=>{
         e.stopPropagation();
-        doSync(true);
+        const file=e.target.files[0];if(!file)return;
+        const status=document.getElementById('sch-scan-status');
+        if(status){status.style.display='block';status.textContent='불러오는 중...';}
+        try{
+            const added=await importScheduleFile(file);
+            switchTab('schedule');
+            if(window.toastr)window.toastr.success(`${added}개 일정을 등록했습니다`,'RP Planner');
+            else toast(`${added}개 일정 등록됨`);
+        }catch(err){
+            toast('파일 불러오기 실패: '+err.message,true);
+        }
+    });
+
+    // AI 스캔
+    document.getElementById('sch-ai-scan-btn')?.addEventListener('click',async e=>{
+        e.stopPropagation();
+        const status=document.getElementById('sch-scan-status');
+        if(status){status.style.display='block';status.textContent='🔍 AI가 일정을 분석 중...';}
+        const btn=document.getElementById('sch-ai-scan-btn');
+        if(btn)btn.disabled=true;
+
+        // 전체 AI 메시지 텍스트 수집
+        const c=getCtx();
+        const aiMsgs=[...(c.chat||[])].filter(m=>!m.is_user);
+        const fullText=aiMsgs.map(m=>m.mes||'').join('\n\n');
+
+        const parsed=await aiScanSchedules(fullText);
+        if(btn)btn.disabled=false;
+
+        if(parsed===null){
+            if(status){status.textContent='❌ 스캔 실패. 연결 프로필을 확인해주세요.';}
+            return;
+        }
+        if(!parsed.length){
+            if(status){status.textContent='감지된 일정이 없습니다.';}
+            return;
+        }
+        const added=applyParsedSchedules(parsed);
+        switchTab('schedule');
+        if(window.toastr)window.toastr.success(`${added}개 일정을 감지했습니다`,'RP Planner');
+        else toast(`${added}개 일정 등록됨`);
     });
 
     // 추가
@@ -980,7 +1173,10 @@ function renderSettings() {
     <div class="rpp-es-hint" style="margin-bottom:8px;color:#c04040">
       모든 스케쥴, 커리어, 부동산, 날짜 데이터가 삭제됩니다. 복구할 수 없습니다.
     </div>
-    <button class="rpp-btn rpp-btn-xs reset-all-btn" id="reset-all-btn">🗑 전체 초기화</button>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="rpp-btn rpp-btn-xs reset-all-btn" id="reset-all-btn">🗑 전체 초기화</button>
+      <button class="rpp-btn rpp-btn-xs reset-cal-btn" id="reset-cal-btn">📅 스케쥴만 삭제</button>
+    </div>
   </div>
 
 </div>`;
@@ -1074,6 +1270,18 @@ function bindSettingsEvents() {
         if(confirm('⚠️ 전체 초기화\n\n모든 스케쥴, 커리어, 부동산, 날짜 데이터가 삭제됩니다.\n이 작업은 복구할 수 없습니다.\n\n계속하시겠습니까?')){
             clearAllData();
             toast('전체 초기화 완료');
+            switchTab('settings');
+        }
+    });
+
+    // 스케쥴만 삭제
+    document.getElementById('reset-cal-btn')?.addEventListener('click',e=>{
+        e.stopPropagation();
+        if(confirm('📅 스케쥴만 삭제\n\n현재 캐릭터의 스케쥴 데이터만 삭제됩니다.\n커리어/부동산 데이터는 유지됩니다.\n\n계속하시겠습니까?')){
+            const d=CD();
+            d.schedules=[];
+            save();injectContext();
+            toast('스케쥴 삭제 완료');
             switchTab('settings');
         }
     });
