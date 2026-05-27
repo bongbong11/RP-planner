@@ -25,6 +25,7 @@ const CHAR_DEFAULTS = {
     schedules:   [],
     characters:  [],
     loreEntries: [],
+    backupSlots: [],
 };
 
 const GLOBAL_DEFAULTS = {
@@ -35,7 +36,6 @@ const GLOBAL_DEFAULTS = {
     injectDepth:   2,
     maxUpcoming:   20,
     maxPast:       10,
-    backupSlots:   [],
     charData:      {},
 };
 
@@ -44,7 +44,6 @@ function S() {
     if(!c.extensionSettings[EXT]) c.extensionSettings[EXT]=structuredClone(GLOBAL_DEFAULTS);
     const d=c.extensionSettings[EXT];
     if(!d.charData)      d.charData={};
-    if(!d.backupSlots)   d.backupSlots=[];
     if(!d.syncPattern)   d.syncPattern='Date: YYYY.MM.DD';
     if(d.syncMode===undefined) d.syncMode='auto';
     if(d.maxUpcoming===undefined) d.maxUpcoming=20;
@@ -58,6 +57,7 @@ function CD() {
     const d=s.charData[k];
     if(!d.characters)  d.characters=[];
     if(!d.loreEntries) d.loreEntries=[];
+    if(!d.backupSlots) d.backupSlots=[];
     if(d.characters.length===0){
         const c=getCtx();
         const char=c.characters?.[c.characterId];
@@ -413,20 +413,27 @@ function injectContext() {
 
 // ─── 백업 ────────────────────────────────────────────────────
 function createBackupSlot(name) {
-    const s=S();
+    const d=CD();
     const slot={id:uid(),name:name||`Backup ${new Date().toLocaleString()}`,
-        data:JSON.parse(JSON.stringify({charData:s.charData,currentDT:s.currentDT})),savedAt:Date.now()};
-    s.backupSlots.unshift(slot);
-    if(s.backupSlots.length>10)s.backupSlots=s.backupSlots.slice(0,10);
+        data:JSON.parse(JSON.stringify({
+            schedules:d.schedules,
+            characters:d.characters,
+            loreEntries:d.loreEntries,
+            currentDT:S().currentDT
+        })),savedAt:Date.now()};
+    d.backupSlots.unshift(slot);
+    if(d.backupSlots.length>10)d.backupSlots=d.backupSlots.slice(0,10);
     save(); return slot;
 }
 function restoreBackupSlot(id) {
-    const s=S(),slot=s.backupSlots.find(x=>x.id===id);if(!slot)return false;
-    if(slot.data.charData)s.charData=JSON.parse(JSON.stringify(slot.data.charData));
-    if(slot.data.currentDT)s.currentDT=slot.data.currentDT;
+    const d=CD(),slot=d.backupSlots.find(x=>x.id===id);if(!slot)return false;
+    if(slot.data.schedules)  d.schedules=JSON.parse(JSON.stringify(slot.data.schedules));
+    if(slot.data.characters) d.characters=JSON.parse(JSON.stringify(slot.data.characters));
+    if(slot.data.loreEntries)d.loreEntries=JSON.parse(JSON.stringify(slot.data.loreEntries));
+    if(slot.data.currentDT)  S().currentDT=slot.data.currentDT;
     sortAndAutoCheck();save();injectContext();return true;
 }
-function deleteBackupSlot(id) { const s=S();s.backupSlots=s.backupSlots.filter(x=>x.id!==id);save(); }
+function deleteBackupSlot(id) { const d=CD();d.backupSlots=d.backupSlots.filter(x=>x.id!==id);save(); }
 function exportToFile() {
     const s=S(),data={charData:s.charData,currentDT:s.currentDT,exportedAt:Date.now()};
     const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
@@ -567,7 +574,14 @@ function bindCalendarEvents() {
     document.getElementById('cal-prev')?.addEventListener('click',e=>{e.stopPropagation();calMonth--;if(calMonth<1){calMonth=12;calYear--;}switchTab('calendar');});
     document.getElementById('cal-next')?.addEventListener('click',e=>{e.stopPropagation();calMonth++;if(calMonth>12){calMonth=1;calYear++;}switchTab('calendar');});
     document.querySelectorAll('.cal-cell[data-day]').forEach(cell=>{
-        cell.addEventListener('click',e=>{e.stopPropagation();schedViewDate={month:+cell.dataset.month,day:+cell.dataset.day};switchTab('schedule');});
+        cell.addEventListener('click',e=>{
+            e.stopPropagation();
+            const day=+cell.dataset.day;
+            const month=+cell.dataset.month;
+            const year=S().currentDT?.year??calYear;
+            schedViewDate={month,day,year};
+            switchTab('schedule');
+        });
     });
 }
 
@@ -856,7 +870,7 @@ function renderSettings() {
     const profiles=getCtx().extensionSettings?.connectionManager?.profiles??[];
     const profileOpts=profiles.map(p=>`<option value="${esc(p.id)}" ${p.id===s.syncProfileId?'selected':''}>${esc(p.name)}</option>`).join('');
     const previewText=buildInjectText()||'(empty)';
-    const backupHTML=s.backupSlots.length?s.backupSlots.map(slot=>`
+    const backupHTML=CD().backupSlots.length?CD().backupSlots.map(slot=>`
       <div class="backup-slot" data-id="${slot.id}">
         <div class="backup-slot-name" contenteditable="true" data-id="${slot.id}">${esc(slot.name)}</div>
         <div class="backup-slot-date">${new Date(slot.savedAt).toLocaleString()}</div>
@@ -988,7 +1002,7 @@ function bindSettingsEvents() {
         if(del){deleteBackupSlot(del.dataset.id);switchTab('settings');}
     });
     document.querySelectorAll('.backup-slot-name[contenteditable]').forEach(el=>{
-        el.addEventListener('blur',e=>{e.stopPropagation();const id=el.dataset.id;const slot=s.backupSlots.find(x=>x.id===id);if(slot){slot.name=el.textContent.trim()||slot.name;save();}});
+        el.addEventListener('blur',e=>{e.stopPropagation();const id=el.dataset.id;const slot=CD().backupSlots.find(x=>x.id===id);if(slot){slot.name=el.textContent.trim()||slot.name;save();}});
     });
 }
 
