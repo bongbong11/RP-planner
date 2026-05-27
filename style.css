@@ -768,3 +768,24 @@
 .reset-cal-btn:hover {
   background: #ffe0b0 !important;
 }
+
+/* 커리어 탭 - 이름 고정 표시 */
+.chr-name-fixed {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #5a3a9a;
+  flex: 1;
+}
+
+/* 커리어 필드 - textarea로 변경 */
+.chr-field-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.chr-fval.rpp-textarea {
+  min-height: 60px;
+  height: auto;
+}
