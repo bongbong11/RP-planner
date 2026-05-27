@@ -138,17 +138,18 @@ function parseSchedulesFromText(text,cur) {
 
     // 영어 월
     const months={january:1,february:2,march:3,april:4,may:5,june:6,july:7,august:8,september:9,october:10,november:11,december:12,jan:1,feb:2,mar:3,apr:4,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
-    const enRe=/(?:\*{0,2}~?)\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\.?\s+(\d{1,2})(?:[–\-]\d{1,2})?(?:st|nd|rd|th)?(?:\s*\(approx[^)]*\))?(?:\*{0,2})?\s*[:\-—]+\s*(?:\*{0,2})([^\n*✅⚠️]{2,80})/gi;
+    const enRe=/(?:\*{0,2}~?)\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\.?\s+(\d{1,2})(?:[–\-](\d{1,2}))?(?:st|nd|rd|th)?(?:\s*\(approx[^)]*\))?(?:\*{0,2})?\s*[:\-—]+\s*(?:\*{0,2})([^\n*✅⚠️]{2,80})/gi;
     while((m=enRe.exec(text))!==null){
         const mo=months[m[1].toLowerCase()],d=+m[2];
-        if(!mo||d<1||d>31)continue; // 유효하지 않은 날짜 제외
-        const title=m[3].trim()
+        const dayEnd=m[3]?+m[3]:d; // 범위 끝 날짜
+        if(!mo||d<1||d>31)continue;
+        const title=m[4].trim()
             .replace(/^\*+\s*/,'').replace(/\*+\s*[—\-]\s*/g,'')
             .replace(/\(approx[^)]*\)\s*/gi,'').replace(/✅|⚠️/g,'')
             .replace(/[.,\s]+$/,'');
         if(!title||title.length<2)continue;
         const k=`${yr??0}-${mo}-${d}-${title}`;
-        if(!seen.has(k)){seen.add(k);found.push({year:yr,month:mo,day:d,title});}
+        if(!seen.has(k)){seen.add(k);found.push({year:yr,month:mo,day:d,dayEnd,title});}
     }
 
     // 상대날짜
@@ -374,23 +375,20 @@ function parseAllMessages() {
     if(!chat?.length)return{dateUpdated:false,added:0};
     const aiMsgs=[...chat].filter(m=>!m.is_user);
     if(!aiMsgs.length)return{dateUpdated:false,added:0};
-    const s=S(),d=CD();
-    let dateUpdated=false,added=0;
+    const s=S();
+    let dateUpdated=false;
     // 날짜는 마지막 AI 메시지 기준
     const lastAI=aiMsgs[aiMsgs.length-1];
     const dt=parseInfoBlock(lastAI.mes||'');
-    if(dt){s.currentDT=dt;dateUpdated=true;}
-    // 스케쥴은 전체 스캔
+    if(dt){s.currentDT=dt;dateUpdated=true;save();}
+    // 스케쥴은 전체 스캔 — applyParsedSchedules로 dayEnd 처리
+    let allFound=[];
     for(const msg of aiMsgs){
         const found=parseSchedulesFromText(msg.mes||'',s.currentDT);
-        for(const f of found){
-            if(!d.schedules.some(x=>x.month===f.month&&x.day===f.day&&x.title===f.title)){
-                d.schedules.push({id:uid(),month:f.month,day:f.day,year:f.year??s.currentDT?.year??null,title:f.title,note:'',done:false,source:'auto',createdAt:Date.now()});
-                added++;
-            }
-        }
+        allFound=allFound.concat(found);
     }
-    if(dateUpdated||added){sortAndAutoCheck();save();injectContext();}
+    const added=applyParsedSchedules(allFound);
+    if(dateUpdated)injectContext();
     return{dateUpdated,added};
 }
 
@@ -401,18 +399,13 @@ function parseLastOnly() {
     const lastAI=[...chat].reverse().find(m=>!m.is_user);
     if(!lastAI)return{dateUpdated:false,added:0};
     const text=lastAI.mes||'';
-    const s=S(),d=CD();
+    const s=S();
     const dt=parseInfoBlock(text);
-    let dateUpdated=false,added=0;
-    if(dt){s.currentDT=dt;dateUpdated=true;}
+    let dateUpdated=false;
+    if(dt){s.currentDT=dt;dateUpdated=true;save();}
     const found=parseSchedulesFromText(text,s.currentDT);
-    for(const f of found){
-        if(!d.schedules.some(x=>x.month===f.month&&x.day===f.day&&x.title===f.title)){
-            d.schedules.push({id:uid(),month:f.month,day:f.day,year:f.year??s.currentDT?.year??null,title:f.title,note:'',done:false,source:'auto',createdAt:Date.now()});
-            added++;
-        }
-    }
-    if(dateUpdated||added){sortAndAutoCheck();save();injectContext();}
+    const added=applyParsedSchedules(found);
+    if(dateUpdated)injectContext();
     return{dateUpdated,added};
 }
 
@@ -753,7 +746,6 @@ function renderSchedule() {
         📄 파일 불러오기
         <input type="file" id="sch-file-input" accept=".txt,.json" style="display:none">
       </label>
-      <button class="rpp-btn rpp-btn-xs" id="sch-ai-scan-btn">🔍 RP에서 AI 스캔</button>
     </div>
     <div class="sch-import-hint">
       txt: <code>5/2 : Rookie minicamp / Pittsburgh facility</code><br>
@@ -842,36 +834,6 @@ function bindScheduleEvents() {
         }
     });
 
-    // AI 스캔
-    document.getElementById('sch-ai-scan-btn')?.addEventListener('click',async e=>{
-        e.stopPropagation();
-        const status=document.getElementById('sch-scan-status');
-        if(status){status.style.display='block';status.textContent='🔍 AI가 일정을 분석 중...';}
-        const btn=document.getElementById('sch-ai-scan-btn');
-        if(btn)btn.disabled=true;
-
-        // 전체 AI 메시지 텍스트 수집
-        const c=getCtx();
-        const aiMsgs=[...(c.chat||[])].filter(m=>!m.is_user);
-        const fullText=aiMsgs.map(m=>m.mes||'').join('\n\n');
-
-        const parsed=await aiScanSchedules(fullText);
-        if(btn)btn.disabled=false;
-
-        if(parsed===null){
-            if(status){status.textContent='❌ 스캔 실패. 연결 프로필을 확인해주세요.';}
-            return;
-        }
-        if(!parsed.length){
-            if(status){status.textContent='감지된 일정이 없습니다.';}
-            return;
-        }
-        const added=applyParsedSchedules(parsed);
-        switchTab('schedule');
-        if(window.toastr)window.toastr.success(`${added}개 일정을 감지했습니다`,'RP Planner');
-        else toast(`${added}개 일정 등록됨`);
-    });
-
     // 추가
     document.getElementById('sch-add-btn')?.addEventListener('click',e=>{
         e.stopPropagation();
@@ -941,50 +903,39 @@ function openSchEdit(id) {
 function renderCharacter() {
     const d=CD();
     const charName=getCurrentCharName();
+    // 카드 없으면 자동 생성
+    if(!d.characters.length&&charName!=='global'){
+        d.characters.push({id:uid(),name:charName,fields:[{key:'',val:''}]});
+        save();
+    }
     let html='';
     d.characters.forEach(c=>{
         html+=`<div class="chr-card" data-id="${c.id}">
           <div class="chr-card-header">
-            <input type="text" class="rpp-inp chr-name-inp" data-id="${c.id}" value="${esc(c.name)}" placeholder="Character name">
-            <button class="chr-del-btn rpp-btn rpp-btn-xs" data-id="${c.id}">Delete</button>
+            <span class="chr-name-fixed">${esc(c.name)}</span>
+            <button class="rpp-btn rpp-btn-xs chr-field-add" data-id="${c.id}">+ 항목 추가</button>
           </div>
           <div class="chr-fields">
             ${c.fields.map((f,i)=>`<div class="chr-field-row">
-              <input type="text" class="rpp-inp chr-fkey" data-cid="${c.id}" data-idx="${i}" value="${esc(f.key)}" placeholder="Field" style="width:90px">
-              <span class="rpp-sep">:</span>
-              <input type="text" class="rpp-inp chr-fval" data-cid="${c.id}" data-idx="${i}" value="${esc(f.val)}" placeholder="Value" style="flex:1">
-              <button class="chr-field-del rpp-btn rpp-btn-xs" data-cid="${c.id}" data-idx="${i}">−</button>
+              <input type="text" class="rpp-inp chr-fkey" data-cid="${c.id}" data-idx="${i}" value="${esc(f.key)}" placeholder="항목명" style="width:80px;flex-shrink:0">
+              <textarea class="rpp-textarea chr-fval" data-cid="${c.id}" data-idx="${i}" placeholder="내용" style="flex:1;min-height:60px;resize:vertical">${esc(f.val)}</textarea>
+              <button class="chr-field-del rpp-btn rpp-btn-xs" data-cid="${c.id}" data-idx="${i}" style="align-self:flex-start">−</button>
             </div>`).join('')}
           </div>
           <div class="chr-card-footer">
-            <button class="rpp-btn rpp-btn-xs chr-field-add" data-id="${c.id}">+ Add field</button>
             <button class="rpp-btn rpp-btn-primary rpp-btn-xs chr-save-btn" data-id="${c.id}">Save</button>
           </div>
         </div>`;
     });
-    if(!d.characters.length)html='<div class="rpp-empty">No characters</div>';
     return `<div class="rpp-chr-wrap">
       <div class="chr-context-label">📌 ${esc(charName)}</div>
-      <div class="chr-top-bar">
-        <input id="chr-new-name" type="text" class="rpp-inp" placeholder="New character name" style="flex:1">
-        <button class="rpp-btn rpp-btn-primary rpp-btn-xs" id="chr-add-btn">Add</button>
-      </div>
       <div id="chr-list">${html}</div>
     </div>`;
 }
 
 function bindCharacterEvents() {
-    document.getElementById('chr-add-btn')?.addEventListener('click',e=>{
-        e.stopPropagation();
-        const name=document.getElementById('chr-new-name').value.trim();
-        if(!name){toast('Enter a name',true);return;}
-        addCharacter(name);document.getElementById('chr-new-name').value='';switchTab('character');toast('Character added');
-    });
-    document.getElementById('chr-new-name')?.addEventListener('keydown',e=>{if(e.key==='Enter'){e.stopPropagation();document.getElementById('chr-add-btn')?.click();}});
     document.getElementById('chr-list')?.addEventListener('click',e=>{
         e.stopPropagation();
-        const delCard=e.target.closest('.chr-del-btn');
-        if(delCard){removeCharacter(delCard.dataset.id);switchTab('character');toast('Deleted');return;}
         const addField=e.target.closest('.chr-field-add');
         if(addField){const d=CD();const c=d.characters.find(x=>x.id===addField.dataset.id);if(c){c.fields.push({key:'',val:''});save();switchTab('character');}return;}
         const delField=e.target.closest('.chr-field-del');
@@ -992,7 +943,6 @@ function bindCharacterEvents() {
         const sv=e.target.closest('.chr-save-btn');
         if(sv){
             const id=sv.dataset.id;const d=CD();const c=d.characters.find(x=>x.id===id);if(!c)return;
-            const nameEl=document.querySelector(`.chr-name-inp[data-id="${id}"]`);if(nameEl)c.name=nameEl.value.trim();
             const keys=document.querySelectorAll(`.chr-fkey[data-cid="${id}"]`);
             const vals=document.querySelectorAll(`.chr-fval[data-cid="${id}"]`);
             c.fields=[];keys.forEach((k,i)=>c.fields.push({key:k.value.trim(),val:vals[i].value.trim()}));
