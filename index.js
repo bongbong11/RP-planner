@@ -245,7 +245,6 @@ function parseSchedulesFromText(text, currentDT) {
     };
 
     // ─── [보정 패턴 1] 기간형 날짜 처리 (예: May 2-4 또는 June 26 – July 22) ───
-    // 이 패턴은 월을 넘나들거나 일주일씩 지속되는 오프시즌 브레이크, 미니캠프를 통째로 잡아냅니다.
     const rangeRegex = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})\s*(?:-|–|~|to)\s*(?:(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+)?(\d{1,2})\b(?:\s*[:-—|,\s])\s*([^\n|.]+)/gi;
     let rMatch;
 
@@ -261,7 +260,6 @@ function parseSchedulesFromText(text, currentDT) {
             const startMonth = monthsMap[startMonthStr];
             const endMonth = monthsMap[endMonthStr];
 
-            // 자바스크립트 Date를 이용해 시작일부터 종료일까지 하루씩 증가시키며 배열에 추가
             let startDate = new Date(baseYear, startMonth - 1, startDay);
             let endDate = new Date(baseYear, endMonth - 1, endDay);
 
@@ -272,19 +270,18 @@ function parseSchedulesFromText(text, currentDT) {
                     day: startDate.getDate(),
                     title: cleanTitleText
                 });
-                startDate.setDate(startDate.getDate() + 1); // 하루 증가
+                startDate.setDate(startDate.getDate() + 1);
             }
         }
     }
 
-    // ─── [보정 패턴 2] 단일 날짜 처리 (이미 기간형으로 긁어간 데이터는 정규식에서 제외되도록 세팅) ───
-    // 예: May 5 — Off day / physicals follow-up
+    // ─── [보정 패턴 2] 단일 날짜 처리 (오타 수정 완료) ───
     const singleDateRegex = /\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b(?:\s*[:-—|,\s])\s*([^\n|.]+)/gi;
     let sMatch;
 
     while ((sMatch = singleDateRegex.exec(text)) !== null) {
-        // 이미 대시(-)나 범위 기호가 뒤에 붙어있다면 패턴1에서 처리했으므로 패스
-        if (sMatch.0.match(/(?:-|–|~|to)\s*/)) continue;
+        // 💡 sMatch.0 에러 유발 지점을 sMatch[0] 으로 안전하게 수정했습니다.
+        if (sMatch[0].match(/(?:-|–|~|to)\s*\d+/)) continue;
 
         const mStr = sMatch[1].toLowerCase();
         const month = monthsMap[mStr];
@@ -319,24 +316,6 @@ function parseSchedulesFromText(text, currentDT) {
     }
 
     return results;
-}
-
-function cleanEnglishTitle(title) {
-    let t = title.trim();
-    // 괄호 안에 들어간 잔여 날짜 정보 제거 (예: "(May 2)" 또는 "(Pittsburgh facility)")
-    t = t.replace(/\s*\([^)]*\)/g, '');
-    t = t.replace(/\|.*/, '').replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?"']/g, "").trim();
-
-    const junkPrefixes = [
-        /^(?:we\s+should\s+)/i, /^(?:we\s+need\s+to\s+)/i, /^(?:let's\s+)/i,
-        /^(?:i\s+will\s+)/i, /^(?:we\s+are\s+going\s+to\s+)/i, /^(?:there\s+is\s+a\s+)/i,
-        /^(?:have\s+a\s+)/i, /^(?:on\s+)/i, /^(?:continued\s+)/i
-    ];
-    for (const regex of junkPrefixes) { t = t.replace(regex, ''); }
-    
-    if (t.length > 0) t = t.charAt(0).toUpperCase() + t.slice(1);
-    if (t.length < 3 || /^(And|The|With|For|But)$/i.test(t)) return null;
-    return t;
 }
 
 // ─── 백업 ────────────────────────────────────────────────────
