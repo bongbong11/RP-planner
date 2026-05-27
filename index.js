@@ -370,11 +370,10 @@ async function importScheduleFile(file) {
 }
 
 function parseAllMessages() {
-    // 날짜만 정규식으로 추출 (자동 동기화용)
     const c=getCtx();
     const chat=c.chat;
     if(!chat?.length)return{dateUpdated:false,added:0};
-    const aiMsgs=[...chat].filter(m=>!m.is_user);
+    const aiMsgs=[...chat].filter(m=>!m.is_user&&!m.is_system);
     if(!aiMsgs.length)return{dateUpdated:false,added:0};
     const s=S();
     let dateUpdated=false;
@@ -385,11 +384,10 @@ function parseAllMessages() {
 }
 
 function parseLastOnly() {
-    // 자동 동기화: 날짜만 추출
     const c=getCtx();
     const chat=c.chat;
     if(!chat?.length)return{dateUpdated:false,added:0};
-    const lastAI=[...chat].reverse().find(m=>!m.is_user);
+    const lastAI=[...chat].filter(m=>!m.is_user&&!m.is_system).slice(-1)[0];
     if(!lastAI)return{dateUpdated:false,added:0};
     const s=S();
     const dt=parseInfoBlock(lastAI.mes||'');
@@ -400,7 +398,7 @@ function parseLastOnly() {
 
 // ─── AI 스케쥴 파싱 (연결 프로필 사용) ──────────────────────
 function extractScheduleRelevantText(chat) {
-    const aiMsgs=chat.filter(m=>!m.is_user);
+    const aiMsgs=chat.filter(m=>!m.is_user&&!m.is_system);
     return aiMsgs.map(m=>m.mes||'').join('\n\n---\n\n');
 }
 
