@@ -255,7 +255,7 @@ function parseAllMessages() {
     let dateUpdated=false;
     const lastAI=aiMsgs[aiMsgs.length-1];
     const dt=parseInfoBlock(lastAI.mes||'');
-    if(dt){CD().currentDT=dt;dateUpdated=true;calYear=dt.year??calYear;calMonth=dt.month??calMonth;save();injectContext();}
+    if(dt){CD().currentDT=dt;dateUpdated=true;calYear=dt.year??calYear;calMonth=dt.month??calMonth;sortAndAutoCheck();save();injectContext();}
     return{dateUpdated,added:0};
 }
 
@@ -268,7 +268,7 @@ function parseLastOnly() {
     const s=S();
     const dt=parseInfoBlock(lastAI.mes||'');
     let dateUpdated=false;
-    if(dt){CD().currentDT=dt;dateUpdated=true;calYear=dt.year??calYear;calMonth=dt.month??calMonth;save();injectContext();}
+    if(dt){CD().currentDT=dt;dateUpdated=true;calYear=dt.year??calYear;calMonth=dt.month??calMonth;sortAndAutoCheck();save();injectContext();}
     return{dateUpdated,added:0};
 }
 
@@ -365,8 +365,9 @@ function buildInjectText() {
     const s=S(),d=CD(),cur=CD().currentDT,lines=[];
     if(cur){
         const dt=fmtDate(cur),t=fmtTime(cur);
+        const day=fmtDayName(cur);
         const season=cur.season?` | Season: ${cur.season}`:'';
-        lines.push(`[RP Current Date: ${dt}${t?` | Time: ${t}`:''}${season}]`);
+        lines.push(`[RP Current Date: ${dt} ${day}${t?` | Time: ${t}`:''}${season}]`);
     }
     const upcoming=d.schedules.filter(x=>!x.done&&(!cur||!isPast(x,cur))).slice(0,s.maxUpcoming??20);
     if(upcoming.length){
@@ -377,11 +378,15 @@ function buildInjectText() {
             if(last&&last.title===x.title&&last.note===(x.note||'')&&last.month===x.month&&x.day===last.endDay+1){
                 last.endDay=x.day;
             } else {
-                groups.push({month:x.month,day:x.day,endDay:x.day,title:x.title,note:x.note||''});
+                groups.push({month:x.month,day:x.day,endDay:x.day,title:x.title,note:x.note||'',year:x.year});
             }
         }
         groups.forEach(g=>{
-            const dateStr=g.day===g.endDay?`${g.month}/${g.day}`:`${g.month}/${g.day}~${g.endDay}`;
+            const startDay=fmtDayName({year:g.year,month:g.month,day:g.day});
+            const endDay=fmtDayName({year:g.year,month:g.month,day:g.endDay});
+            const dateStr=g.day===g.endDay
+                ?`${g.month}/${g.day}(${startDay})`
+                :`${g.month}/${g.day}(${startDay})~${g.endDay}(${endDay})`;
             const note=g.note?` (${g.note})`:'';
             lines.push(`  - ${dateStr}: ${g.title}${note}`);
         });
