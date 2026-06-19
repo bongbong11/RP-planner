@@ -1,6 +1,7 @@
 // RP Planner v5 — SillyTavern Extension
 
 import { event_types } from '../../../events.js';
+import { MacrosParser } from '../../../macros.js';
 
 const EXT        = 'rp-planner';
 const INJECT_KEY = 'rp-planner-inject';
@@ -73,6 +74,58 @@ function CD() {
 }
 
 function save() { getCtx().saveSettingsDebounced(); }
+
+// ─── 고아 데이터 정리 ────────────────────────────────────────
+function pruneOrphanedData() {
+    const c=getCtx();
+    const s=S();
+    const charData=s.charData||{};
+    let changed=false;
+
+    // 1) 현재 존재하는 캐릭터 이름 목록 ('global' 키는 항상 유지)
+    const validNames=new Set(['global']);
+    (c.characters||[]).forEach(ch=>{ if(ch?.name) validNames.add(`char_${ch.name.replace(/\s+/g,'_')}`); });
+
+    // 2) 유효하지 않은 캐릭터 키 삭제 (단, 현재 활성 키는 보존)
+    const currentKey=charKey();
+    for(const key of Object.keys(charData)){
+        if(key===currentKey) continue; // 지금 쓰고 있는 캐릭터는 항상 보존
+        if(!validNames.has(key)){
+            delete charData[key];
+            changed=true;
+        }
+    }
+
+    // 3) 안전망: 캐릭터 데이터 총 개수 캡 (너무 많아지면 오래된 것부터 삭제)
+    const MAX_CHARS=60;
+    const keys=Object.keys(charData);
+    if(keys.length>MAX_CHARS){
+        // backupSlots의 savedAt 또는 schedules의 createdAt 중 가장 최근 것 기준 정렬
+        const scored=keys.map(k=>{
+            const d=charData[k];
+            const times=[
+                ...(d.schedules||[]).map(x=>x.createdAt||0),
+                ...(d.backupSlots||[]).map(x=>x.savedAt||0),
+            ];
+            return{key:k,last:times.length?Math.max(...times):0};
+        }).sort((a,b)=>a.last-b.last);
+        const toRemove=scored.slice(0,keys.length-MAX_CHARS).map(x=>x.key).filter(k=>k!==currentKey);
+        toRemove.forEach(k=>{delete charData[k];changed=true;});
+    }
+
+    // 4) 각 캐릭터의 schedules 배열 캡 (무한 누적 방지)
+    const MAX_SCHEDULES=300;
+    for(const key of Object.keys(charData)){
+        const d=charData[key];
+        if(d.schedules&&d.schedules.length>MAX_SCHEDULES){
+            d.schedules.sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
+            d.schedules=d.schedules.slice(d.schedules.length-MAX_SCHEDULES);
+            changed=true;
+        }
+    }
+
+    if(changed){ s.charData=charData; save(); console.log(LOG,'고아 데이터 정리 완료'); }
+}
 
 // ─── 유틸 ────────────────────────────────────────────────────
 function uid()  { return Date.now().toString(36)+Math.random().toString(36).slice(2,5); }
@@ -361,7 +414,7 @@ function updateLore(id,title,content) {
 }
 
 // ─── Context 주입 ─────────────────────────────────────────────
-function buildInjectText() {
+function buildScheduleText() {
     const s=S(),d=CD(),cur=CD().currentDT,lines=[];
     if(cur){
         const dt=fmtDate(cur),t=fmtTime(cur);
@@ -398,9 +451,14 @@ function buildInjectText() {
         past.forEach(x=>{const note=x.note?` (${x.note})`:'';lines.push(`  - ${x.month}/${x.day}: ${x.title}${note} — completed`);});
         lines.push(']');
     }
+    return lines.join('\n');
+}
+
+function buildCareerLoreText() {
+    const d=CD(),lines=[];
     d.characters.forEach(c=>{
         if(!c.name)return;
-        const fl=c.fields.filter(f=>f.key&&f.val).map(f=>`  ${f.key}: ${f.val}`);
+        const fl=c.fields.filter(f=>f.val).map(f=>f.key?`  ${f.key}: ${f.val}`:`  ${f.val}`);
         if(fl.length){lines.push(`[Character — ${c.name}:`);lines.push(...fl);lines.push(']');}
     });
     d.loreEntries.forEach(e=>{
@@ -410,6 +468,11 @@ function buildInjectText() {
         lines.push(']');
     });
     return lines.join('\n');
+}
+
+function buildInjectText() {
+    const parts=[buildScheduleText(),buildCareerLoreText()].filter(Boolean);
+    return parts.join('\n');
 }
 
 function injectContext() {
@@ -950,6 +1013,13 @@ function renderSettings() {
       <input type="number" id="rpp-es-depth" class="rpp-es-num" value="${s.injectDepth}" min="0" max="10">
       <span class="rpp-es-hint">0=시스템끝, 2=마지막 앞</span>
     </div>
+    <div class="rpp-es-hint" style="margin-top:8px">
+      위 설정과 별개로, 프리셋/시스템 프롬프트 안에 아래 매크로를 직접 적어두면 그 위치에 데이터가 채워집니다.
+    </div>
+    <div class="rpp-macro-box">
+      <code>{{스케쥴}}</code> → 날짜 + 일정 목록<br>
+      <code>{{커리어}}</code> → 커리어 + 부동산 내용
+    </div>
   </div>
   <div class="rpp-es-section rpp-es-preview">
     <div class="rpp-es-title">👁 주입 내용 미리보기</div>
@@ -1095,6 +1165,7 @@ function applyTheme() {
 
 function openPanel() {
     if(document.getElementById('rpp-panel'))return;
+    pruneOrphanedData();
     const wrap=document.createElement('div');
     wrap.id='rpp-wrapper';wrap.innerHTML=getPanelHTML();
     document.body.appendChild(wrap);
@@ -1180,6 +1251,18 @@ function registerSettingsUI() {
     document.getElementById('rpp-ext-profile')?.addEventListener('change',e=>{S().syncProfileId=e.target.value||null;save();});
 }
 
+// ─── 매크로 등록 (프롬프트에 직접 삽입용) ────────────────────
+function registerMacros() {
+    try{
+        MacrosParser.registerMacro('스케쥴', ()=>buildScheduleText());
+        MacrosParser.registerMacro('커리어', ()=>buildCareerLoreText());
+        MacrosParser.registerMacro('schedule', ()=>buildScheduleText());
+        MacrosParser.registerMacro('career', ()=>buildCareerLoreText());
+    }catch(err){
+        console.error(LOG,'매크로 등록 실패:',err);
+    }
+}
+
 async function init() {
     ctx=SillyTavern.getContext();
     if(!ctx.extensionSettings[EXT])ctx.extensionSettings[EXT]=structuredClone(GLOBAL_DEFAULTS);
@@ -1196,7 +1279,8 @@ async function init() {
     ctx.eventSource.on(event_types.MESSAGE_RECEIVED,onMessageReceived);
     ctx.eventSource.on(event_types.CHAT_CHANGED,onCharacterChanged);
     ctx.eventSource.on(event_types.CHARACTER_EDITED,onCharacterChanged);
-    registerSettingsUI();injectContext();
+    registerSettingsUI();registerMacros();injectContext();
+    pruneOrphanedData();
     console.log(LOG,'v6 loaded');
 }
 
