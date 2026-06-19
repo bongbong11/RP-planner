@@ -879,3 +879,23 @@
   font-weight: 700;
   color: #9080b8;
 }
+
+/* 매크로 안내 박스 */
+.rpp-macro-box {
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: var(--rpp-pre-bg);
+  border: 1px solid var(--rpp-pre-bd);
+  border-radius: 6px;
+  font-size: 0.74rem;
+  color: var(--rpp-pre-text);
+  line-height: 1.8;
+}
+.rpp-macro-box code {
+  background: var(--rpp-accent-bg);
+  color: var(--rpp-accent);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: 'Consolas', monospace;
+  font-weight: 600;
+}
