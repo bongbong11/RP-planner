@@ -1546,6 +1546,23 @@ function waitForToolbar(timeoutMs=10000) {
     });
 }
 
+function closeExtensionsMenu() {
+    // RP Planner is launched from SillyTavern's extensions popover. Close that
+    // popover after opening the side panel so it does not remain over the UI.
+    const menu=document.getElementById('extensionsMenu');
+    if(!menu)return;
+    const button=document.getElementById('extensionsMenuButton');
+    if(button){
+        setTimeout(()=>{
+            const style=getComputedStyle(menu);
+            if(style.display!=='none'&&style.visibility!=='hidden')button.click();
+        },0);
+        return;
+    }
+    menu.classList.remove('open','show','visible');
+    menu.setAttribute('aria-hidden','true');
+}
+
 function installQuickReplyPopupEnhancements() {
     if(document.documentElement.dataset.rppQuickReplyObserver==='on')return;
     document.documentElement.dataset.rppQuickReplyObserver='on';
@@ -1589,9 +1606,10 @@ async function init() {
     const toolbar=await waitForToolbar();
     if(!document.getElementById('rpp-toolbar-btn'))toolbar.insertAdjacentHTML('beforeend',btnHTML);
     document.getElementById('rpp-toolbar-btn')?.addEventListener('click',e=>{
-        e.stopPropagation();
+        e.preventDefault();
         const badge=document.getElementById('rpp-badge');if(badge)badge.style.display='none';
         panelOpen?closePanel():openPanel();
+        closeExtensionsMenu();
     });
     ctx.eventSource.on(event_types.MESSAGE_RECEIVED,onMessageReceived);
     ctx.eventSource.on(event_types.CHAT_CHANGED,onCharacterChanged);
@@ -1599,7 +1617,7 @@ async function init() {
     if(!document.getElementById('rpp-ext-block'))registerSettingsUI();
     registerMacros();registerSlashCommands();installQuickReplyPopupEnhancements();injectContext();
     pruneOrphanedData();
-    console.log(LOG,'v3.4.1 loaded',storageAvailable?'(전용 폴더 저장)':'(settings.json 임시 저장)');
+    console.log(LOG,'v3.4.3 loaded',storageAvailable?'(전용 폴더 저장)':'(settings.json 임시 저장)');
     })();
     try{
         await initPromise;
