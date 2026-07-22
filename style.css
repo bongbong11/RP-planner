@@ -481,7 +481,8 @@ dialog.popup:has(.rpp-quick-schedule-picker) .popup-content {
 .sch-card.today { border-color: #c8a8f0; background: var(--rpp-bg3); }
 .sch-card.past  { opacity: 0.65; }
 .sch-card.done  { opacity: 0.5; }
-.sch-card.done .sch-card-title { text-decoration: line-through; }
+.sch-card.done .sch-card-title,
+.sch-card.past .sch-card-title { text-decoration: line-through; }
 
 .sch-card-header {
   display: flex;
