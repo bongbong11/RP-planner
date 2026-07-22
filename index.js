@@ -36,14 +36,46 @@ let ctx = null;
 let initPromise = null;
 function getCtx() { if(!ctx) ctx=SillyTavern.getContext(); return ctx; }
 
-// ─── 캐릭터별 데이터 키 ──────────────────────────────────────
+// ─── 채팅별 데이터 키 ────────────────────────────────────────
 function getCurrentCharName() {
     const c=getCtx();
     const aiMsg=[...(c.chat||[])].reverse().find(m=>!m.is_user&&!m.is_system);
     return aiMsg?.name||'global';
 }
 
+function shortHash(value) {
+    let hash=2166136261;
+    for(const ch of String(value)){
+        hash^=ch.charCodeAt(0);
+        hash=Math.imul(hash,16777619);
+    }
+    return (hash>>>0).toString(36);
+}
+
+function getCurrentChatIdentity() {
+    const c=getCtx();
+    const chatId=c.chatId??c.chat_id??c.chatMetadata?.chat_id??c.chat_metadata?.chat_id;
+    const owner=getCurrentChatOwner();
+    // chatId is the SillyTavern chat filename/id. Including the owner prevents a
+    // coincidentally identical filename in another character/group from colliding.
+    if(chatId!=null&&String(chatId).trim())return `${owner}|chat:${String(chatId).trim()}`;
+    // Unsaved chats normally acquire chatId as soon as the first message is saved.
+    // Keep their temporary record owner-scoped instead of falling back to a global key.
+    return `${owner}|unsaved`;
+}
+
+function getCurrentChatOwner() {
+    const c=getCtx();
+    return c.groupId!=null?`group:${c.groupId}`:`character:${c.characterId??getCurrentCharName()}`;
+}
+
+function chatKeyFromIdentity(identity) { return `chat_${shortHash(identity)}`; }
+
 function charKey() {
+    return chatKeyFromIdentity(getCurrentChatIdentity());
+}
+
+function legacyCharKey() {
     const name=getCurrentCharName();
     return `char_${name.replace(/\s+/g,'_')}`;
 }
@@ -79,6 +111,20 @@ function S() {
 
 function CD() {
     const s=S(), k=charKey();
+    const pendingKey=chatKeyFromIdentity(`${getCurrentChatOwner()}|unsaved`);
+    if(k!==pendingKey&&!s.charData[k]&&s.charData[pendingKey]){
+        s.charData[k]=s.charData[pendingKey];
+        delete s.charData[pendingKey];
+        save();
+    }
+    // One-time migration: move the old character-wide record into the first chat
+    // that opens it. Moving (not copying) prevents it leaking into other chats.
+    const legacy=legacyCharKey();
+    if(!s.charData[k]&&s.charData[legacy]){
+        s.charData[k]=s.charData[legacy];
+        delete s.charData[legacy];
+        save();
+    }
     if(!s.charData[k]) s.charData[k]=structuredClone(CHAR_DEFAULTS);
     const d=s.charData[k];
     if(!d.backupSlots) d.backupSlots=[];
@@ -95,24 +141,21 @@ function pruneOrphanedData() {
     const charData=s.charData||{};
     let changed=false;
 
-    // 1) 현재 존재하는 캐릭터 이름 목록 ('global' 키는 항상 유지)
-    const validNames=new Set(['global']);
-    (c.characters||[]).forEach(ch=>{ if(ch?.name) validNames.add(`char_${ch.name.replace(/\s+/g,'_')}`); });
-
-    // 2) 유효하지 않은 캐릭터 키 삭제 (단, 현재 활성 키는 보존)
+    // 1) Legacy character-wide keys are removed after migration. Chat records
+    // cannot be safely matched against the current character list, so age/count
+    // caps below are used instead of accidentally deleting another chat's data.
     const currentKey=charKey();
     for(const key of Object.keys(charData)){
-        if(key===currentKey) continue; // 지금 쓰고 있는 캐릭터는 항상 보존
-        if(!validNames.has(key)){
+        if(key!==legacyCharKey()&&key.startsWith('char_')){
             delete charData[key];
             changed=true;
         }
     }
 
-    // 3) 안전망: 캐릭터 데이터 총 개수 캡 (너무 많아지면 오래된 것부터 삭제)
-    const MAX_CHARS=60;
+    // 2) 안전망: 채팅 데이터 총 개수 캡 (너무 많아지면 오래된 것부터 삭제)
+    const MAX_CHATS=100;
     const keys=Object.keys(charData);
-    if(keys.length>MAX_CHARS){
+    if(keys.length>MAX_CHATS){
         // backupSlots의 savedAt 또는 schedules의 createdAt 중 가장 최근 것 기준 정렬
         const scored=keys.map(k=>{
             const d=charData[k];
@@ -122,11 +165,11 @@ function pruneOrphanedData() {
             ];
             return{key:k,last:times.length?Math.max(...times):0};
         }).sort((a,b)=>a.last-b.last);
-        const toRemove=scored.slice(0,keys.length-MAX_CHARS).map(x=>x.key).filter(k=>k!==currentKey);
+        const toRemove=scored.slice(0,keys.length-MAX_CHATS).map(x=>x.key).filter(k=>k!==currentKey);
         toRemove.forEach(k=>{delete charData[k];changed=true;});
     }
 
-    // 4) 각 캐릭터의 schedules 배열 캡 (무한 누적 방지)
+    // 3) 각 채팅의 schedules 배열 캡 (무한 누적 방지)
     const MAX_SCHEDULES=300;
     for(const key of Object.keys(charData)){
         const d=charData[key];
@@ -651,7 +694,12 @@ function restoreBackupSlot(id) {
 }
 function deleteBackupSlot(id) { const d=CD();d.backupSlots=d.backupSlots.filter(x=>x.id!==id);save(); }
 function exportToFile() {
-    const s=S(),data={charData:s.charData,currentDT:CD().currentDT,exportedAt:Date.now()};
+    const data={
+        format:'rp-planner-chat-backup',
+        version:1,
+        chatData:JSON.parse(JSON.stringify(CD())),
+        exportedAt:Date.now()
+    };
     const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
     const url=URL.createObjectURL(blob);
     const a=document.createElement('a');a.href=url;a.download=`rp-planner-${Date.now()}.json`;
@@ -662,16 +710,34 @@ function importFromFile(file) {
         const reader=new FileReader();
         reader.onload=e=>{
             try{
-                const data=JSON.parse(e.target.result);const s=S();
-                if(data.charData)s.charData=data.charData;
-                if(data.currentDT)CD().currentDT=data.currentDT;
+                const data=JSON.parse(e.target.result),s=S(),key=charKey();
+                if(data.format==='rp-planner-chat-backup'&&data.chatData){
+                    s.charData[key]=Object.assign(structuredClone(CHAR_DEFAULTS),data.chatData);
+                }else if(data.charData){
+                    // Backward compatibility: import only one matching legacy/current
+                    // record into this chat; never replace the whole data store.
+                    const old=data.charData[key]??data.charData[legacyCharKey()];
+                    if(!old)throw new Error('현재 채팅에 해당하는 백업 데이터가 없습니다');
+                    s.charData[key]=Object.assign(structuredClone(CHAR_DEFAULTS),old);
+                }else{
+                    throw new Error('지원하지 않는 백업 파일입니다');
+                }
+                if(data.currentDT&&!s.charData[key].currentDT)s.charData[key].currentDT=data.currentDT;
                 sortAndAutoCheck();save();injectContext();resolve(true);
             }catch(err){reject(err);}
         };
         reader.onerror=reject;reader.readAsText(file);
     });
 }
-function clearAllData() { const s=S();s.charData={};CD().currentDT=null;save();injectContext(); }
+function clearAllData() {
+    const s=S(),key=charKey();
+    // Delete the whole current-chat record. This also removes scan hashes and
+    // internal backup slots, so deleted schedules cannot survive in a backup.
+    delete s.charData[key];
+    schedViewDate=null;
+    save();
+    injectContext();
+}
 
 // ══════════════════════════════════════════════════════════════
 // UI STATE
@@ -1142,7 +1208,7 @@ function bindSettingsEvents() {
     });
     document.getElementById('reset-all-btn')?.addEventListener('click',e=>{
         e.stopPropagation();
-        if(confirm('⚠️ 일정 전체 초기화\n\n모든 일정과 현재 RP 날짜가 삭제됩니다. 복구할 수 없습니다.\n계속하시겠습니까?')){clearAllData();toast('일정 초기화 완료');switchTab('settings');}
+        if(confirm('⚠️ 현재 채팅 일정 전체 초기화\n\n이 채팅의 일정, 현재 RP 날짜, 수집 기록, 내부 백업이 모두 삭제됩니다. 다른 채팅의 일정은 유지됩니다. 복구할 수 없습니다.\n계속하시겠습니까?')){clearAllData();toast('현재 채팅 일정 데이터 삭제 완료');switchTab('settings');}
     });
     document.getElementById('backup-slots')?.addEventListener('click',e=>{
         e.stopPropagation();
@@ -1443,7 +1509,7 @@ async function init() {
     if(!document.getElementById('rpp-ext-block'))registerSettingsUI();
     registerMacros();registerSlashCommands();installQuickReplyPopupEnhancements();injectContext();
     pruneOrphanedData();
-    console.log(LOG,'v3.3.2 loaded');
+    console.log(LOG,'v3.3.3 loaded');
     })();
     try{
         await initPromise;
