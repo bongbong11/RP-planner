@@ -33,6 +33,7 @@ const QUICK_REPLY_SCRIPT=`/buttons labels=["1개월","3개월","6개월","12개�
 /popup wide=on large=on scroll=on <b>📅 일정 등록 완료</b><br><br><b>{{var::added}}</b>개 등록됨 ({{var::span}})`;
 
 let ctx = null;
+let initPromise = null;
 function getCtx() { if(!ctx) ctx=SillyTavern.getContext(); return ctx; }
 
 // ─── 캐릭터별 데이터 키 ──────────────────────────────────────
@@ -1352,14 +1353,33 @@ function registerMacros() {
     }
 }
 
+function waitForToolbar(timeoutMs=10000) {
+    const find=()=>document.getElementById('extensionsMenu')??document.getElementById('top-bar');
+    const existing=find();
+    if(existing)return Promise.resolve(existing);
+    return new Promise((resolve,reject)=>{
+        const observer=new MutationObserver(()=>{
+            const toolbar=find();
+            if(!toolbar)return;
+            clearTimeout(timer);observer.disconnect();resolve(toolbar);
+        });
+        const timer=setTimeout(()=>{
+            observer.disconnect();reject(new Error('RP Planner toolbar container not found'));
+        },timeoutMs);
+        observer.observe(document.documentElement,{childList:true,subtree:true});
+    });
+}
+
 async function init() {
+    if(initPromise)return initPromise;
+    initPromise=(async()=>{
     ctx=SillyTavern.getContext();
     if(!ctx.extensionSettings[EXT])ctx.extensionSettings[EXT]=structuredClone(GLOBAL_DEFAULTS);
     const btnHTML=`<div id="rpp-toolbar-btn" class="rpp-toolbar-btn" title="RP Planner">
       <span>📆 스케줄러</span><span id="rpp-badge" style="display:none" class="rpp-badge-dot"></span>
     </div>`;
-    const toolbar=document.getElementById('extensionsMenu')??document.getElementById('top-bar');
-    toolbar?.insertAdjacentHTML('beforeend',btnHTML);
+    const toolbar=await waitForToolbar();
+    if(!document.getElementById('rpp-toolbar-btn'))toolbar.insertAdjacentHTML('beforeend',btnHTML);
     document.getElementById('rpp-toolbar-btn')?.addEventListener('click',e=>{
         e.stopPropagation();
         const badge=document.getElementById('rpp-badge');if(badge)badge.style.display='none';
@@ -1368,12 +1388,23 @@ async function init() {
     ctx.eventSource.on(event_types.MESSAGE_RECEIVED,onMessageReceived);
     ctx.eventSource.on(event_types.CHAT_CHANGED,onCharacterChanged);
     ctx.eventSource.on(event_types.CHARACTER_EDITED,onCharacterChanged);
-    registerSettingsUI();registerMacros();registerSlashCommands();injectContext();
+    if(!document.getElementById('rpp-ext-block'))registerSettingsUI();
+    registerMacros();registerSlashCommands();injectContext();
     pruneOrphanedData();
-    console.log(LOG,'v6 loaded');
+    console.log(LOG,'v3.2.1 loaded');
+    })();
+    try{
+        await initPromise;
+    }catch(err){
+        initPromise=null;
+        throw err;
+    }
 }
 
-jQuery(async()=>{
-    const context=SillyTavern.getContext();
-    context.eventSource.on(event_types.APP_READY,async()=>{await init();});
+jQuery(()=>{
+    // Third-party extensions may be evaluated after APP_READY has already fired.
+    // Listen for APP_READY, but also start immediately in case it already fired.
+    const start=()=>init().catch(err=>console.error(LOG,'초기화 실패:',err));
+    SillyTavern.getContext().eventSource.on(event_types.APP_READY,start);
+    start();
 });
