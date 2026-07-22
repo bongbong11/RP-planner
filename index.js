@@ -2,10 +2,35 @@
 
 import { event_types } from '../../../events.js';
 import { MacrosParser } from '../../../macros.js';
+import { registerSlashCommand } from '../../../slash-commands.js';
 
 const EXT        = 'rp-planner';
 const INJECT_KEY = 'rp-planner-inject';
 const LOG        = '[RPPlanner]';
+const QUICK_REPLY_SCRIPT=`/buttons labels=["1개월","3개월","6개월","12개월"] <b>📅 일정 생성</b><br>얼마 동안의 일정을 만들까요? |
+/let span {{pipe}} |
+/if left={{var::span}} right="" rule=eq {: /abort :} |
+/cal-future | /let busy {{pipe}} |
+/if left={{var::busy}} right="" rule=eq {: /popup 현재 RP 날짜를 먼저 설정해주세요! | /abort :} |
+/echo severity=info timeout=60000 📅 {{var::span}}치 일정 짜는 중… |
+/let op {:/preset:}() |
+/preset 속마음용 |
+/gen lock=on [OOC: Out-of-character task. Do NOT roleplay or write any prose. Context JSON — 'today' is the CURRENT in-story date, 'booked' lists dates that already have events: {{var::busy}} Starting from the day AFTER 'today', create {{var::span}} worth of upcoming schedule entries for {{char}}, fitting the story's setting and {{char}}'s life. Rules: every entry MUST fall within {{var::span}} counted forward from 'today' — never before 'today', never beyond that window; never place an entry on a date listed in 'booked'; spread entries out naturally; do not put two entries on the same date. CRITICAL — only things that can genuinely be PLANNED IN ADVANCE: appointments, deadlines, exams, trips, meetings, performances, anniversaries, reservations, scheduled work shifts, classes, checkups. NEVER invent unforeseeable events (illness, accidents, someone catching a cold, sudden fights, weather, chance encounters) or anything that depends on how the story unfolds. A calendar holds commitments, not plot predictions. Output ONE entry per line in EXACTLY this format, nothing else: M/D : 제목 No numbering, no bullets, no markdown fence, no commentary. Titles in KOREAN.] |
+/let plan {{pipe}} |
+/preset {{var::op}} |
+/re-replace find=/\`\`\`[a-z]*/g replace="" {{var::plan}} | /var plan {{pipe}} |
+/split find=/[\\r\\n]+/ trim=on {{var::plan}} | /let lines {{pipe}} |
+/buttons multiple=on labels={{var::lines}} <b>📅 이 일정으로 등록할까요?</b><br>빼고 싶은 건 체크 해제하세요 |
+/let picked {{pipe}} |
+/let n {:/len {{var::picked}}:}() |
+/if left={{var::n}} right=0 rule=eq {: /popup 등록 취소했어요! | /abort :} |
+/let added 0 |
+/let c 0 |
+/foreach {{var::picked}} {:
+    /cal-import {{var::item}} | /var c {{pipe}} |
+    /var added {:/add {{var::added}} {{var::c}}:}() |
+:} |
+/popup wide=on large=on scroll=on <b>📅 일정 등록 완료</b><br><br><b>{{var::added}}</b>개 등록됨 ({{var::span}})`;
 
 let ctx = null;
 function getCtx() { if(!ctx) ctx=SillyTavern.getContext(); return ctx; }
@@ -24,17 +49,14 @@ function charKey() {
 
 const CHAR_DEFAULTS = {
     schedules:   [],
-    characters:  [],
-    loreEntries: [],
     backupSlots: [],
     currentDT:   null,
+    processedMessageHashes: [],
 };
 
 const GLOBAL_DEFAULTS = {
     syncMode:      'auto',
     syncPattern:   'Date: YYYY.MM.DD',
-    injectEnabled: true,
-    injectDepth:   2,
     maxUpcoming:   20,
     maxPast:       10,
     darkMode:      false,
@@ -58,18 +80,8 @@ function CD() {
     const s=S(), k=charKey();
     if(!s.charData[k]) s.charData[k]=structuredClone(CHAR_DEFAULTS);
     const d=s.charData[k];
-    if(!d.characters)  d.characters=[];
-    if(!d.loreEntries) d.loreEntries=[];
     if(!d.backupSlots) d.backupSlots=[];
-    if(d.characters.length===0){
-        const c=getCtx();
-        const char=c.characters?.[c.characterId];
-        const name=char?.name||null;
-        if(name){
-            d.characters.push({id:uid(),name,fields:[{key:'',val:''}]});
-            save();
-        }
-    }
+    if(!Array.isArray(d.processedMessageHashes))d.processedMessageHashes=[];
     return d;
 }
 
@@ -130,6 +142,7 @@ function pruneOrphanedData() {
 // ─── 유틸 ────────────────────────────────────────────────────
 function uid()  { return Date.now().toString(36)+Math.random().toString(36).slice(2,5); }
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function escAttr(s) { return esc(s).replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 
 function cmpDate(a,b) {
     const currentYear=CD().currentDT?.year??new Date().getFullYear();
@@ -242,7 +255,7 @@ function applyParsedSchedules(parsed) {
         const endDay=f.dayEnd?+f.dayEnd:startDay;
         const year=f.year??yr;
         for(let day=startDay;day<=endDay;day++){
-            if(!d.schedules.some(x=>x.month===+f.month&&x.day===day&&x.title===f.title)){
+            if(!d.schedules.some(x=>(x.year??yr)===year&&x.month===+f.month&&x.day===day&&x.title===f.title)){
                 d.schedules.push({
                     id:uid(),
                     month:+f.month,
@@ -326,44 +339,90 @@ function parseLastOnly() {
 }
 
 // ─── AI 스케쥴 파싱 (연결 프로필 사용) ──────────────────────
-function extractScheduleRelevantText(chat) {
-    const aiMsgs=chat.filter(m=>!m.is_user&&!m.is_system);
-    return aiMsgs.map(m=>m.mes||'').join('\n\n---\n\n');
+function messageHash(msg) {
+    const stableTime=msg.send_date??msg.extra?.api_timestamp??'';
+    const input=`${msg.is_user?'user':'assistant'}\n${stableTime}\n${msg.mes||''}`;
+    let hash=2166136261;
+    for(let i=0;i<input.length;i++){
+        hash^=input.charCodeAt(i);
+        hash=Math.imul(hash,16777619);
+    }
+    return (hash>>>0).toString(36);
 }
 
-async function aiParseSchedules(excludeDates=[]) {
+function getUnprocessedMessages(chat) {
+    const done=new Set(CD().processedMessageHashes||[]);
+    const result=[];
+    let activeDate=null;
+    for(const message of chat){
+        if(message.is_system)continue;
+        const parsedDate=parseInfoBlock(message.mes||'');
+        if(parsedDate)activeDate=parsedDate;
+        if(!(message.mes||'').trim())continue;
+        const hash=messageHash(message);
+        if(!done.has(hash))result.push({message,hash,contextDate:activeDate?{...activeDate}:null});
+    }
+    return result;
+}
+
+function markMessagesProcessed(items) {
+    const d=CD();
+    d.processedMessageHashes=[...new Set([...(d.processedMessageHashes||[]),...items.map(x=>x.hash)])].slice(-1200);
+    save();
+}
+
+function extractScheduleRelevantText(items) {
+    return items.map(({message,contextDate})=>{
+        const role=message.is_user?'USER':'ASSISTANT';
+        const date=contextDate?`${contextDate.year}-${contextDate.month}-${contextDate.day}`:'unknown';
+        return `[${role} | IN-STORY DATE AT THIS MESSAGE: ${date}]\n${message.mes||''}`;
+    }).join('\n\n--- MESSAGE ---\n\n');
+}
+
+async function aiParseScheduleBatch(items) {
     const s=S(), c=getCtx();
     const profileId=s.syncProfileId;
     if(!profileId) return{error:'연결 프로필을 먼저 설정해주세요 (설정 탭)'};
+    if(!items.length) return{parsed:[]};
 
-    const chat=c.chat||[];
-    if(!chat.length) return{error:'채팅 내용이 없습니다'};
-
-    const filteredText=extractScheduleRelevantText(chat);
-    if(!filteredText.trim()) return{added:0};
+    const filteredText=extractScheduleRelevantText(items);
+    if(!filteredText.trim()) return{parsed:[]};
 
     const curDT=CD().currentDT;
     const curDateStr=curDT?`${curDT.year??''}년 ${curDT.month}월 ${curDT.day}일`:null;
 
-    // 이미 OOC 파싱으로 잡힌 날짜는 제외
-    const excludeStr=excludeDates.length?
-        `\nAlready extracted dates (skip these): ${excludeDates.map(d=>`${d.month}/${d.day}`).join(', ')}`:
-        '';
+    const existing=CD().schedules.map(x=>({year:x.year,month:x.month,day:x.day,title:x.title}));
+    const systemPrompt=`You are a calendar extraction tool. Current in-story date: ${curDateStr||'unknown'}.
 
-    const systemPrompt=`Extract scheduled events from this roleplay chat. Current RP date: ${curDateStr||'unknown'}.${excludeStr}
-Return ONLY JSON array: [{"year":2027,"month":5,"day":3,"dayEnd":5,"title":"Event","note":"detail or null"}]
-- Only extract real planned events mentioned in natural conversation (not already-listed schedules)
-- Calculate relative dates (tomorrow, next Tuesday) from current RP date
-- dayEnd only for date ranges
-- Ignore dialogue, actions, narration, already-listed schedule blocks
-- Return [] if nothing found`;
+Each message is labelled with the in-story date active at that point in the chat. Use that per-message date—not the final current date—when resolving relative expressions such as tomorrow or next Friday. If a message date is unknown, do not guess a relative date.
+
+Read both USER and ASSISTANT messages and extract ONLY commitments that belong on a calendar.
+
+Include only events with a definite or reliably calculable date: appointments, reservations, meetings, deadlines, exams, trips, performances, scheduled work, classes, checkups, anniversaries, and explicitly planned personal commitments.
+
+Exclude wishes, possibilities, vague future intentions, routines without a specific date, completed events, narration, weather, illness, accidents, fights, chance encounters, predictions, and plot speculation. Do not invent missing dates or details. Resolve relative dates only when the current in-story date makes the result unambiguous.
+
+Output ONLY a JSON array in this exact schema:
+[{"year":2027,"month":5,"day":3,"dayEnd":null,"title":"짧은 한국어 일정명","note":"필요한 구체 정보만 또는 빈 문자열"}]
+
+Formatting rules:
+- One event per object. Never write prose or markdown.
+- title must be a concise Korean calendar label, not a sentence.
+- note must contain only useful fixed details such as time, place, person, or reservation information.
+- Do not repeat title information in note.
+- dayEnd is used only for an explicitly stated continuous date range; otherwise null.
+- Existing calendar entries are reference only. Do not output an exact duplicate with the same date and title.
+- Return [] when no valid schedule exists.
+
+Existing entries:
+${JSON.stringify(existing)}`;
 
     try {
         const userContent=`${systemPrompt}\n\n===CHAT===\n${filteredText}`;
         const messages=[{role:'user',content:userContent}];
         const response=await c.ConnectionManagerRequestService.sendRequest(
             profileId, messages, 1000,
-            {stream:false, extractData:true, includePreset:true, includeInstruct:false}
+            {stream:false, extractData:true, includePreset:false, includeInstruct:false}
         );
 
         let raw='';
@@ -380,12 +439,99 @@ Return ONLY JSON array: [{"year":2027,"month":5,"day":3,"dayEnd":5,"title":"Even
         const parsed=JSON.parse(jsonMatch[0]);
         if(!Array.isArray(parsed)) return{error:'잘못된 응답 형식'};
 
-        const added=applyParsedSchedules(parsed);
-        return{added, parsed};
+        return{parsed};
     } catch(err) {
         console.error('[RPPlanner] AI parse error:', err);
         return{error:err.message||'AI 호출 실패'};
     }
+}
+
+async function aiParseSchedules(items) {
+    const batches=[];
+    let batch=[],size=0;
+    for(const item of items){
+        const itemSize=(item.message.mes||'').length+120;
+        if(batch.length&&size+itemSize>24000){batches.push(batch);batch=[];size=0;}
+        batch.push(item);size+=itemSize;
+    }
+    if(batch.length)batches.push(batch);
+
+    const parsed=[];
+    for(const part of batches){
+        const result=await aiParseScheduleBatch(part);
+        if(result.error)return result;
+        parsed.push(...(result.parsed||[]));
+    }
+    return{parsed};
+}
+
+function normalizeParsedSchedules(items) {
+    const cur=CD().currentDT;
+    const existing=CD().schedules;
+    const seen=new Set();
+    const clean=[];
+    for(const raw of items||[]){
+        const month=+raw.month,day=+raw.day;
+        let year=raw.year?+raw.year:(cur?.year??null);
+        if(year&&cur?.year&&!raw.year&&(month<cur.month||(month===cur.month&&day<cur.day)))year++;
+        const title=String(raw.title||'').replace(/[\r\n]+/g,' ').replace(/^[-*•\s]+|[.。\s]+$/g,'').trim();
+        const note=String(raw.note||'').replace(/[\r\n]+/g,' ').trim();
+        const dayEnd=raw.dayEnd?+raw.dayEnd:null;
+        if(!title||month<1||month>12||day<1||day>31)continue;
+        const testYear=year??2000;
+        const valid=new Date(testYear,month-1,day);
+        if(valid.getFullYear()!==testYear||valid.getMonth()!==month-1||valid.getDate()!==day)continue;
+        const key=`${year??0}-${month}-${day}-${title.toLocaleLowerCase()}`;
+        if(seen.has(key))continue;
+        seen.add(key);
+        if(existing.some(x=>(x.year??cur?.year??null)===year&&x.month===month&&x.day===day&&x.title.trim().toLocaleLowerCase()===title.toLocaleLowerCase()))continue;
+        clean.push({year,month,day,dayEnd:dayEnd&&dayEnd>=day?dayEnd:null,title,note});
+    }
+    return clean;
+}
+
+function reviewParsedSchedules(items) {
+    return new Promise(resolve=>{
+        const overlay=document.createElement('div');
+        overlay.className='rpp-review-overlay';
+        const rows=items.map((x,i)=>`
+          <div class="rpp-review-row" data-index="${i}">
+            <label class="rpp-review-check"><input type="checkbox" class="rpp-review-use" checked> 등록</label>
+            <div class="rpp-review-date">
+              <input class="rpp-review-year" type="number" value="${x.year??''}" placeholder="연도">
+              <span>/</span><input class="rpp-review-month" type="number" value="${x.month}" min="1" max="12">
+              <span>/</span><input class="rpp-review-day" type="number" value="${x.day}" min="1" max="31">
+            </div>
+            <input class="rpp-review-title" type="text" value="${escAttr(x.title)}" placeholder="일정 제목">
+            <input class="rpp-review-note" type="text" value="${escAttr(x.note)}" placeholder="시간·장소·상대 등 필요한 메모만">
+          </div>`).join('');
+        overlay.innerHTML=`<div class="rpp-review-dialog">
+          <div class="rpp-review-head"><b>📅 파싱 결과 확인</b><span>${items.length}개</span></div>
+          <div class="rpp-review-hint">등록하지 않을 일정은 체크를 해제하고, 제목과 메모는 바로 수정할 수 있어요.</div>
+          <div class="rpp-review-list">${rows}</div>
+          <div class="rpp-review-actions">
+            <button class="rpp-btn rpp-review-cancel">취소</button>
+            <button class="rpp-btn rpp-btn-primary rpp-review-save">선택 일정 등록</button>
+          </div>
+        </div>`;
+        document.body.appendChild(overlay);
+
+        const finish=value=>{overlay.remove();resolve(value);};
+        overlay.querySelector('.rpp-review-cancel').addEventListener('click',()=>finish(null));
+        overlay.querySelector('.rpp-review-save').addEventListener('click',()=>{
+            const selected=[];
+            overlay.querySelectorAll('.rpp-review-row').forEach((row,i)=>{
+                if(!row.querySelector('.rpp-review-use').checked)return;
+                const year=parseInt(row.querySelector('.rpp-review-year').value)||null;
+                const month=parseInt(row.querySelector('.rpp-review-month').value);
+                const day=parseInt(row.querySelector('.rpp-review-day').value);
+                const title=row.querySelector('.rpp-review-title').value.trim();
+                const note=row.querySelector('.rpp-review-note').value.trim();
+                if(title&&month&&day)selected.push({...items[i],year,month,day,title,note});
+            });
+            finish(normalizeParsedSchedules(selected));
+        });
+    });
 }
 
 // ─── 스케쥴 CRUD ─────────────────────────────────────────────
@@ -400,18 +546,6 @@ function addSchedule({month,day,year=null,title,note='',source='manual'}) {
 }
 function removeSchedule(id) { const d=CD();d.schedules=d.schedules.filter(x=>x.id!==id);save();injectContext(); }
 function toggleDone(id)     { const d=CD();const x=d.schedules.find(x=>x.id===id);if(x){x.done=!x.done;save();injectContext();} }
-
-// ─── 캐릭터 CRUD ─────────────────────────────────────────────
-function addCharacter(name) { CD().characters.push({id:uid(),name:name.trim(),fields:[{key:'',val:''}]});save();injectContext(); }
-function removeCharacter(id){ const d=CD();d.characters=d.characters.filter(x=>x.id!==id);save();injectContext(); }
-
-// ─── 로어 CRUD ───────────────────────────────────────────────
-function addLore(title,content='') { CD().loreEntries.push({id:uid(),title:title.trim(),content:content.trim()});save();injectContext(); }
-function removeLore(id)            { const d=CD();d.loreEntries=d.loreEntries.filter(x=>x.id!==id);save();injectContext(); }
-function updateLore(id,title,content) {
-    const d=CD();const e=d.loreEntries.find(x=>x.id===id);
-    if(e){e.title=title;e.content=content;save();injectContext();}
-}
 
 // ─── Context 주입 ─────────────────────────────────────────────
 function buildScheduleText() {
@@ -454,31 +588,13 @@ function buildScheduleText() {
     return lines.join('\n');
 }
 
-function buildCareerLoreText() {
-    const d=CD(),lines=[];
-    d.characters.forEach(c=>{
-        if(!c.name)return;
-        const fl=c.fields.filter(f=>f.val).map(f=>f.key?`  ${f.key}: ${f.val}`:`  ${f.val}`);
-        if(fl.length){lines.push(`[Character — ${c.name}:`);lines.push(...fl);lines.push(']');}
-    });
-    d.loreEntries.forEach(e=>{
-        if(!e.title&&!e.content)return;
-        lines.push(`[${e.title||'Note'}:`);
-        e.content.split('\n').forEach(l=>{if(l.trim())lines.push(`  ${l.trim()}`);});
-        lines.push(']');
-    });
-    return lines.join('\n');
-}
-
 function buildInjectText() {
-    const parts=[buildScheduleText(),buildCareerLoreText()].filter(Boolean);
-    return parts.join('\n');
+    return buildScheduleText();
 }
 
 function injectContext() {
-    const s=S(),c=getCtx();
-    if(!s.injectEnabled){c.setExtensionPrompt?.(INJECT_KEY,'',1,0);return;}
-    c.setExtensionPrompt?.(INJECT_KEY,buildInjectText(),1,s.injectDepth);
+    // 프리셋 매크로 전용. 이전 버전에서 남은 직접 주입 프롬프트도 제거한다.
+    getCtx().setExtensionPrompt?.(INJECT_KEY,'',1,0);
 }
 
 // ─── 백업 ────────────────────────────────────────────────────
@@ -487,8 +603,7 @@ function createBackupSlot(name) {
     const slot={id:uid(),name:name||`Backup ${new Date().toLocaleString()}`,
         data:JSON.parse(JSON.stringify({
             schedules:d.schedules,
-            characters:d.characters,
-            loreEntries:d.loreEntries,
+            processedMessageHashes:d.processedMessageHashes,
             currentDT:CD().currentDT
         })),savedAt:Date.now()};
     d.backupSlots.unshift(slot);
@@ -498,8 +613,7 @@ function createBackupSlot(name) {
 function restoreBackupSlot(id) {
     const d=CD(),slot=d.backupSlots.find(x=>x.id===id);if(!slot)return false;
     if(slot.data.schedules)  d.schedules=JSON.parse(JSON.stringify(slot.data.schedules));
-    if(slot.data.characters) d.characters=JSON.parse(JSON.stringify(slot.data.characters));
-    if(slot.data.loreEntries)d.loreEntries=JSON.parse(JSON.stringify(slot.data.loreEntries));
+    if(slot.data.processedMessageHashes)d.processedMessageHashes=JSON.parse(JSON.stringify(slot.data.processedMessageHashes));
     if(slot.data.currentDT)  CD().currentDT=slot.data.currentDT;
     sortAndAutoCheck();save();injectContext();return true;
 }
@@ -539,11 +653,8 @@ function getPanelHTML() {
   <div id="rpp-tabs">
     <button class="rpp-tab" data-tab="calendar" title="Calendar">📅</button>
     <button class="rpp-tab" data-tab="schedule" title="Schedule">🗓</button>
-    <button class="rpp-tab" data-tab="character" title="커리어">💼</button>
-    <button class="rpp-tab" data-tab="lore" title="부동산">🏠</button>
     <button class="rpp-tab" data-tab="settings" title="Settings">⚙️</button>
     <div class="rpp-tab-spacer"></div>
-    <button id="rpp-inject-toggle" class="rpp-tab rpp-inject-btn" title="Toggle RP injection">📤</button>
     <button id="rpp-sync-btn" class="rpp-tab rpp-sync-icon" title="AI 스케쥴 파싱">⚡</button>
     <button id="rpp-close" class="rpp-tab rpp-close-tab">✕</button>
   </div>
@@ -561,21 +672,13 @@ function switchTab(tab,opts={}) {
     switch(tab){
         case 'calendar':  c.innerHTML=renderCalendar();  bindCalendarEvents();  break;
         case 'schedule':  c.innerHTML=renderSchedule();  bindScheduleEvents();  break;
-        case 'character': c.innerHTML=renderCharacter(); bindCharacterEvents(); break;
-        case 'lore':      c.innerHTML=renderLore();      bindLoreEvents();      break;
         case 'settings':  c.innerHTML=renderSettings();  bindSettingsEvents();  break;
     }
     updateHeaderBtns();
 }
 
 function updateHeaderBtns() {
-    const s=S();
-    const injectBtn=document.getElementById('rpp-inject-toggle');
-    if(injectBtn){
-        injectBtn.classList.toggle('inactive',!s.injectEnabled);
-        injectBtn.title=s.injectEnabled?'RP Injection ON (click to disable)':'RP Injection OFF (click to enable)';
-        injectBtn.textContent=s.injectEnabled?'📤':'🔕';
-    }
+    // Header state hook retained for compatibility.
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -841,108 +944,7 @@ function openSchEdit(id) {
 }
 
 // ══════════════════════════════════════════════════════════════
-// TAB 3: CHARACTER
-// ══════════════════════════════════════════════════════════════
-function renderCharacter() {
-    const d=CD(),charName=getCurrentCharName();
-    if(!d.characters.length&&charName!=='global'){
-        d.characters.push({id:uid(),name:charName,fields:[{key:'',val:''}]});save();
-    }
-    let html='';
-    d.characters.forEach(c=>{
-        html+=`<div class="chr-card" data-id="${c.id}">
-          <div class="chr-card-header">
-            <span class="chr-name-fixed">${esc(c.name)}</span>
-            <button class="rpp-btn rpp-btn-xs chr-field-add" data-id="${c.id}">+ 항목 추가</button>
-          </div>
-          <div class="chr-fields">
-            ${c.fields.map((f,i)=>`<div class="chr-field-row">
-              <input type="text" class="rpp-inp chr-fkey" data-cid="${c.id}" data-idx="${i}" value="${esc(f.key)}" placeholder="항목명" style="width:80px;flex-shrink:0">
-              <textarea class="rpp-textarea chr-fval" data-cid="${c.id}" data-idx="${i}" placeholder="내용" style="flex:1;min-height:60px;resize:vertical">${esc(f.val)}</textarea>
-              <button class="chr-field-del rpp-btn rpp-btn-xs" data-cid="${c.id}" data-idx="${i}" style="align-self:flex-start">−</button>
-            </div>`).join('')}
-          </div>
-          <div class="chr-card-footer"><button class="rpp-btn rpp-btn-primary rpp-btn-xs chr-save-btn" data-id="${c.id}">Save</button></div>
-        </div>`;
-    });
-    return `<div class="rpp-chr-wrap">
-      <div class="chr-context-label">📌 ${esc(charName)}</div>
-      <div id="chr-list">${html}</div>
-    </div>`;
-}
-
-function bindCharacterEvents() {
-    document.getElementById('chr-list')?.addEventListener('click',e=>{
-        e.stopPropagation();
-        const addField=e.target.closest('.chr-field-add');
-        if(addField){const d=CD();const c=d.characters.find(x=>x.id===addField.dataset.id);if(c){c.fields.push({key:'',val:''});save();switchTab('character');}return;}
-        const delField=e.target.closest('.chr-field-del');
-        if(delField){const d=CD();const c=d.characters.find(x=>x.id===delField.dataset.cid);if(c){c.fields.splice(+delField.dataset.idx,1);save();injectContext();switchTab('character');}return;}
-        const sv=e.target.closest('.chr-save-btn');
-        if(sv){
-            const id=sv.dataset.id;const d=CD();const c=d.characters.find(x=>x.id===id);if(!c)return;
-            const keys=document.querySelectorAll(`.chr-fkey[data-cid="${id}"]`);
-            const vals=document.querySelectorAll(`.chr-fval[data-cid="${id}"]`);
-            c.fields=[];keys.forEach((k,i)=>c.fields.push({key:k.value.trim(),val:vals[i].value.trim()}));
-            c.fields=c.fields.filter(f=>f.key||f.val);save();injectContext();toast('Saved');
-        }
-    });
-}
-
-// ══════════════════════════════════════════════════════════════
-// TAB 4: LORE
-// ══════════════════════════════════════════════════════════════
-function renderLore() {
-    const d=CD(),charName=getCurrentCharName();
-    let html='';
-    d.loreEntries.forEach(e=>{
-        html+=`<div class="lore-card" data-id="${e.id}">
-          <div class="lore-card-header">
-            <input type="text" class="rpp-inp lore-title-inp" data-id="${e.id}" value="${esc(e.title)}" placeholder="Title">
-            <button class="lore-del-btn rpp-btn rpp-btn-xs" data-id="${e.id}" style="flex-shrink:0;">Delete</button>
-          </div>
-          <textarea class="rpp-textarea lore-content" data-id="${e.id}" placeholder="Content...">${esc(e.content)}</textarea>
-          <div class="lore-card-footer"><button class="rpp-btn rpp-btn-primary rpp-btn-xs lore-save-btn" data-id="${e.id}">Save</button></div>
-        </div>`;
-    });
-    if(!d.loreEntries.length)html='<div class="rpp-empty">No lore entries</div>';
-    return `<div class="rpp-lore-wrap">
-      <div class="chr-context-label">📌 ${esc(charName)}</div>
-      <div class="lore-top-bar">
-        <input id="lore-new-title" type="text" class="rpp-inp" placeholder="Title" style="flex:1;min-width:0;">
-        <button class="rpp-btn rpp-btn-primary rpp-btn-xs" id="lore-add-btn" style="flex-shrink:0;">Add</button>
-      </div>
-      <div id="lore-list">${html}</div>
-    </div>`;
-}
-
-function bindLoreEvents() {
-    document.getElementById('lore-add-btn')?.addEventListener('click',e=>{
-        e.stopPropagation();
-        const title=document.getElementById('lore-new-title').value.trim();
-        addLore(title,'');document.getElementById('lore-new-title').value='';switchTab('lore');toast('Entry added');
-    });
-    document.getElementById('lore-new-title')?.addEventListener('keydown',e=>{if(e.key==='Enter'){e.stopPropagation();document.getElementById('lore-add-btn')?.click();}});
-    document.getElementById('lore-list')?.addEventListener('click',e=>{
-        e.stopPropagation();
-        const del=e.target.closest('.lore-del-btn');
-        if(del){
-            const id=del.dataset.id;del.closest('.lore-card')?.remove();
-            setTimeout(async()=>{try{await removeLore(id);switchTab('lore');toast('Deleted');}catch(err){switchTab('lore');}},50);
-            return;
-        }
-        const sv=e.target.closest('.lore-save-btn');
-        if(sv){
-            const id=sv.dataset.id;
-            const title=document.querySelector(`.lore-title-inp[data-id="${id}"]`)?.value.trim()||'';
-            const content=document.querySelector(`.lore-content[data-id="${id}"]`)?.value.trim()||'';
-            updateLore(id,title,content);toast('Saved');
-        }
-    });
-}
-
-// ══════════════════════════════════════════════════════════════
-// TAB 5: SETTINGS
+// TAB 3: SETTINGS
 // ══════════════════════════════════════════════════════════════
 function renderSettings() {
     const s=S();
@@ -1003,22 +1005,23 @@ function renderSettings() {
   <div class="rpp-es-section">
     <div class="rpp-es-title">🔗 연결 프로필 (AI 파싱용)</div>
     <select id="rpp-es-profile" class="rpp-es-select" style="width:100%;max-width:100%;box-sizing:border-box"><option value="">선택 안 함</option>${profileOpts}</select>
+    <div class="rpp-es-row" style="margin-top:8px">
+      <button id="rpp-reset-scan-history" class="rpp-btn rpp-btn-xs">↻ 전체 채팅 다시 검사</button>
+    </div>
+    <div class="rpp-es-hint" style="margin-top:5px">일정은 지우지 않고, 다음 ⚡ 수집 때 현재 채팅을 전부 다시 검사합니다.</div>
   </div>
   <div class="rpp-es-section">
-    <div class="rpp-es-title">📤 롤플 반영</div>
-    <div class="rpp-es-row"><span class="rpp-es-label">Context 주입</span>
-      <button id="rpp-inject-toggle-settings" class="rpp-btn rpp-btn-xs ${s.injectEnabled?'inject-on':'inject-off'}">${s.injectEnabled?'켜짐 ✓':'꺼짐 ✗'}</button>
-    </div>
-    <div class="rpp-es-row" style="margin-top:6px"><span class="rpp-es-label">Depth</span>
-      <input type="number" id="rpp-es-depth" class="rpp-es-num" value="${s.injectDepth}" min="0" max="10">
-      <span class="rpp-es-hint">0=시스템끝, 2=마지막 앞</span>
-    </div>
-    <div class="rpp-es-hint" style="margin-top:8px">
-      위 설정과 별개로, 프리셋/시스템 프롬프트 안에 아래 매크로를 직접 적어두면 그 위치에 데이터가 채워집니다.
-    </div>
+    <div class="rpp-es-title">✨ 일정 자동 생성 Quick Reply</div>
+    <div class="rpp-es-hint" style="margin-bottom:8px">기간 선택 → AI 생성 → 일정 선택 → 달력 등록까지 실행하는 STscript입니다.</div>
+    <button id="rpp-copy-quick-reply" class="rpp-btn rpp-btn-primary rpp-btn-xs">📋 빠른답장 스크립트 복사</button>
+    <div class="rpp-es-hint" style="margin-top:6px">Quick Reply를 하나 만든 뒤 버튼 내용에 붙여넣으세요. 스크립트의 <code>속마음용</code>은 실제 사용할 프리셋 이름과 같아야 합니다.</div>
+  </div>
+  <div class="rpp-es-section">
+    <div class="rpp-es-title">📤 프리셋 매크로</div>
+    <div class="rpp-es-hint" style="margin-top:8px">프리셋이나 시스템 프롬프트의 원하는 위치에 매크로를 넣으세요. 별도 Depth 설정은 필요하지 않습니다.</div>
     <div class="rpp-macro-box">
-      <code>{{스케쥴}}</code> → 날짜 + 일정 목록<br>
-      <code>{{커리어}}</code> → 커리어 + 부동산 내용
+      <code>{{플래너}}</code> → &lt;플래너&gt; 태그까지 포함<br>
+      <code>{{스케쥴}}</code> → 일정 내용만
     </div>
   </div>
   <div class="rpp-es-section rpp-es-preview">
@@ -1038,8 +1041,7 @@ function renderSettings() {
     <div class="rpp-es-title">⚠️ 초기화</div>
     <div class="rpp-es-hint" style="margin-bottom:8px;color:#c04040">복구할 수 없습니다.</div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
-      <button class="rpp-btn rpp-btn-xs reset-all-btn" id="reset-all-btn">🗑 전체 초기화</button>
-      <button class="rpp-btn rpp-btn-xs reset-cal-btn" id="reset-cal-btn">📅 스케쥴만 삭제</button>
+      <button class="rpp-btn rpp-btn-xs reset-all-btn" id="reset-all-btn">🗑 일정 전체 초기화</button>
     </div>
   </div>
 </div>`;
@@ -1078,8 +1080,25 @@ function bindSettingsEvents() {
     document.getElementById('rpp-max-upcoming')?.addEventListener('change',e=>{e.stopPropagation();s.maxUpcoming=parseInt(e.target.value)||20;save();injectContext();});
     document.getElementById('rpp-max-past')?.addEventListener('change',e=>{e.stopPropagation();s.maxPast=parseInt(e.target.value)||10;save();injectContext();});
     document.getElementById('rpp-es-profile')?.addEventListener('change',e=>{e.stopPropagation();s.syncProfileId=e.target.value||null;save();});
-    document.getElementById('rpp-inject-toggle-settings')?.addEventListener('click',e=>{e.stopPropagation();s.injectEnabled=!s.injectEnabled;save();injectContext();updateHeaderBtns();switchTab('settings');});
-    document.getElementById('rpp-es-depth')?.addEventListener('input',e=>{e.stopPropagation();const val=parseInt(e.target.value);if(!isNaN(val)){s.injectDepth=val;save();injectContext();}});
+    document.getElementById('rpp-reset-scan-history')?.addEventListener('click',e=>{
+        e.stopPropagation();
+        if(confirm('수집 기록을 초기화하고 현재 채팅을 다시 검사할까요?\n등록된 일정은 삭제되지 않습니다.')){
+            CD().processedMessageHashes=[];save();toast('다음 수집에서 전체 채팅을 다시 검사합니다');
+        }
+    });
+    document.getElementById('rpp-copy-quick-reply')?.addEventListener('click',async e=>{
+        e.stopPropagation();
+        try{
+            await navigator.clipboard.writeText(QUICK_REPLY_SCRIPT);
+            toast('빠른답장 스크립트를 복사했어요');
+        }catch(err){
+            const area=document.createElement('textarea');
+            area.value=QUICK_REPLY_SCRIPT;area.style.position='fixed';area.style.opacity='0';
+            document.body.appendChild(area);area.select();
+            const ok=document.execCommand('copy');area.remove();
+            toast(ok?'빠른답장 스크립트를 복사했어요':'복사에 실패했어요',!ok);
+        }
+    });
     document.getElementById('backup-create-btn')?.addEventListener('click',e=>{e.stopPropagation();const slot=createBackupSlot(`Backup ${new Date().toLocaleString()}`);toast(`Saved: ${slot.name}`);switchTab('settings');});
     document.getElementById('backup-export-btn')?.addEventListener('click',e=>{e.stopPropagation();exportToFile();toast('File exported');});
     document.getElementById('backup-import-input')?.addEventListener('change',async e=>{
@@ -1088,11 +1107,7 @@ function bindSettingsEvents() {
     });
     document.getElementById('reset-all-btn')?.addEventListener('click',e=>{
         e.stopPropagation();
-        if(confirm('⚠️ 전체 초기화\n\n모든 데이터가 삭제됩니다. 복구할 수 없습니다.\n계속하시겠습니까?')){clearAllData();toast('전체 초기화 완료');switchTab('settings');}
-    });
-    document.getElementById('reset-cal-btn')?.addEventListener('click',e=>{
-        e.stopPropagation();
-        if(confirm('📅 스케쥴만 삭제\n\n커리어/부동산은 유지됩니다.\n계속하시겠습니까?')){const d=CD();d.schedules=[];save();injectContext();toast('스케쥴 삭제 완료');switchTab('settings');}
+        if(confirm('⚠️ 일정 전체 초기화\n\n모든 일정과 현재 RP 날짜가 삭제됩니다. 복구할 수 없습니다.\n계속하시겠습니까?')){clearAllData();toast('일정 초기화 완료');switchTab('settings');}
     });
     document.getElementById('backup-slots')?.addEventListener('click',e=>{
         e.stopPropagation();
@@ -1114,34 +1129,42 @@ function toast(msg,err=false) {
     clearTimeout(_toastTimer);_toastTimer=setTimeout(()=>el.className='',2800);
 }
 
-// ─── 동기화: OOC 정규식 + AI ─────────────────────────────────
+// ─── 동기화: 새/수정 메시지 지문 + 검토 후 등록 ─────────────
 async function doSync(showAlert=false) {
     const c=getCtx();
     const chat=c.chat||[];
 
-    // 1. 날짜 동기화
     const{dateUpdated}=parseLastOnly();
-
-    // 2. OOC 블록 정규식 파싱
-    const oocParsed=parseOOCSchedules(chat);
-    const oocAdded=applyParsedSchedules(oocParsed);
-
-    // 3. OOC에서 잡힌 날짜 목록 (AI 제외용)
-    const oocDates=oocParsed.map(f=>({month:f.month,day:f.day}));
-
-    // 4. AI로 나머지 자연어 파싱 (연결 프로필 있을 때만)
-    let aiAdded=0;
-    const s=S();
-    if(s.syncProfileId){
-        const result=await aiParseSchedules(oocDates);
-        if(!result.error) aiAdded=result.added||0;
+    const pending=getUnprocessedMessages(chat);
+    if(!pending.length){
+        const msg=dateUpdated?'날짜/시간 갱신됨 · 새로 검사할 메시지 없음':'새로 검사할 메시지 없음';
+        if(showAlert&&window.toastr)window.toastr.info(msg,'RP Planner');else toast(msg);
+        return;
     }
 
-    const totalAdded=oocAdded+aiAdded;
+    const result=await aiParseSchedules(pending);
+    if(result.error){
+        if(showAlert&&window.toastr)window.toastr.error(result.error,'RP Planner');else toast(result.error,true);
+        return;
+    }
+
+    const parsed=normalizeParsedSchedules(result.parsed);
+    let selected=[];
+    if(parsed.length){
+        const reviewed=await reviewParsedSchedules(parsed);
+        if(reviewed===null){
+            toast('등록을 취소했어요');
+            return;
+        }
+        selected=reviewed;
+    }
+
+    const totalAdded=applyParsedSchedules(selected);
+    markMessagesProcessed(pending);
     let msg='새로운 일정 없음';
     if(dateUpdated&&totalAdded) msg=`날짜 갱신 + ${totalAdded}개 일정 감지`;
     else if(dateUpdated)        msg='날짜/시간 갱신됨';
-    else if(totalAdded)         msg=`${totalAdded}개 일정 감지됨`;
+    else if(totalAdded)         msg=`${totalAdded}개 일정 등록됨`;
 
     if(showAlert){if(window.toastr)window.toastr.success(msg,'RP Planner');else alert(msg);}
     else toast(msg);
@@ -1183,12 +1206,6 @@ function openPanel() {
         finally{ if(btn){btn.disabled=false;btn.innerHTML='⚡';} }
     });
 
-    document.getElementById('rpp-inject-toggle')?.addEventListener('click',e=>{
-        e.stopPropagation();const s=S();s.injectEnabled=!s.injectEnabled;
-        save();injectContext();updateHeaderBtns();
-        toast(s.injectEnabled?'RP Injection ON':'RP Injection OFF');
-    });
-
     panelOpen=true;
     applyTheme();
     // 현재 RP 날짜로 달력 초기화
@@ -1201,7 +1218,7 @@ function openPanel() {
             if(!document.body.contains(e.target))return;
             const panel=document.getElementById('rpp-panel');
             const btn=document.getElementById('rpp-toolbar-btn');
-            if(panel&&!panel.contains(e.target)&&btn&&!btn.contains(e.target))closePanel();
+            if(panel&&!panel.contains(e.target)&&btn&&!btn.contains(e.target)&&!e.target.closest('.rpp-review-overlay'))closePanel();
         };
         document.addEventListener('click',_outsideH);
     },80);
@@ -1251,13 +1268,85 @@ function registerSettingsUI() {
     document.getElementById('rpp-ext-profile')?.addEventListener('change',e=>{S().syncProfileId=e.target.value||null;save();});
 }
 
+// ─── STscript 슬래시 명령 ────────────────────────────────────
+function isoDate(year,month,day) {
+    return `${String(year).padStart(4,'0')}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+}
+
+function getFutureCalendarContext() {
+    const cur=CD().currentDT;
+    if(!cur?.year||!cur?.month||!cur?.day){
+        toast('현재 RP 날짜를 먼저 설정해주세요',true);
+        return '';
+    }
+
+    const booked=[...new Set(CD().schedules
+        .filter(x=>!x.done&&!isPast(x,cur))
+        .map(x=>{
+            let year=x.year??cur.year;
+            if(x.year==null&&(x.month<cur.month||(x.month===cur.month&&x.day<cur.day)))year++;
+            return isoDate(year,x.month,x.day);
+        }))].sort();
+
+    return JSON.stringify({today:isoDate(cur.year,cur.month,cur.day),booked});
+}
+
+function importCalendarLine(value) {
+    const text=(Array.isArray(value)?value.join(' '):String(value??''))
+        .replace(/^['"]|['"]$/g,'').trim();
+    const m=text.match(/^(?:(\d{4})[.\-/])?(\d{1,2})[.\-/](\d{1,2})\s*[:：]\s*(.+)$/);
+    if(!m){toast('형식 오류: M/D : 제목',true);return '0';}
+
+    const cur=CD().currentDT;
+    let year=m[1]?+m[1]:(cur?.year??null);
+    const month=+m[2],day=+m[3],title=m[4].trim();
+    if(!title||month<1||month>12||day<1||day>31)return '0';
+    if(year&&cur?.year&&!m[1]&&(month<cur.month||(month===cur.month&&day<cur.day)))year++;
+
+    const checkYear=year??2000;
+    const valid=new Date(checkYear,month-1,day);
+    if(valid.getFullYear()!==checkYear||valid.getMonth()!==month-1||valid.getDate()!==day){
+        toast('존재하지 않는 날짜입니다',true);return '0';
+    }
+
+    const added=applyParsedSchedules([{year,month,day,title,note:''}]);
+    if(panelOpen){
+        if(activeTab==='calendar')switchTab('calendar');
+        else if(activeTab==='schedule')switchTab('schedule');
+    }
+    return String(added);
+}
+
+function registerSlashCommands() {
+    try{
+        registerSlashCommand(
+            'cal-future',
+            ()=>getFutureCalendarContext(),
+            [],
+            '<div>Quick Reply 일정 생성용 문맥을 반환합니다. 반환값: {"today":"YYYY-MM-DD","booked":[...]}</div>',
+            true,
+            true,
+        );
+        registerSlashCommand(
+            'cal-import',
+            (_namedArgs,unnamedArgs)=>importCalendarLine(unnamedArgs),
+            [],
+            '<div><code>/cal-import M/D : 제목</code> 형식의 일정 한 건을 등록하고 0 또는 1을 반환합니다.</div>',
+            true,
+            true,
+        );
+    }catch(err){
+        console.error(LOG,'슬래시 명령 등록 실패:',err);
+    }
+}
+
 // ─── 매크로 등록 (프롬프트에 직접 삽입용) ────────────────────
 function registerMacros() {
     try{
         MacrosParser.registerMacro('스케쥴', ()=>buildScheduleText());
-        MacrosParser.registerMacro('커리어', ()=>buildCareerLoreText());
         MacrosParser.registerMacro('schedule', ()=>buildScheduleText());
-        MacrosParser.registerMacro('career', ()=>buildCareerLoreText());
+        MacrosParser.registerMacro('플래너', ()=>`<플래너>\n${buildScheduleText()}\n</플래너>`);
+        MacrosParser.registerMacro('planner', ()=>`<planner>\n${buildScheduleText()}\n</planner>`);
     }catch(err){
         console.error(LOG,'매크로 등록 실패:',err);
     }
@@ -1279,7 +1368,7 @@ async function init() {
     ctx.eventSource.on(event_types.MESSAGE_RECEIVED,onMessageReceived);
     ctx.eventSource.on(event_types.CHAT_CHANGED,onCharacterChanged);
     ctx.eventSource.on(event_types.CHARACTER_EDITED,onCharacterChanged);
-    registerSettingsUI();registerMacros();injectContext();
+    registerSettingsUI();registerMacros();registerSlashCommands();injectContext();
     pruneOrphanedData();
     console.log(LOG,'v6 loaded');
 }
