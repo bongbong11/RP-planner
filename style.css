@@ -162,7 +162,7 @@ dialog.popup:has(.rpp-quick-schedule-picker) .popup-content {
   padding-right: 34px;
 }
 
-/* 다중선택 체크 표시를 각 버튼 안에 고정 */
+/* SillyTavern의 다중선택 체크 표시가 스크롤 영역 밖으로 새지 않게 버튼 안에 고정 */
 dialog.popup:has(.rpp-quick-schedule-picker) .scrollable-buttons-container {
   overflow-x: hidden;
 }
@@ -292,13 +292,18 @@ dialog.popup:has(.rpp-quick-schedule-picker) .scrollable-buttons-container .menu
 .rpp-calendar-schedule {
   flex: 1 1 auto;
   min-height: 0;
-  overflow-y: auto;
+  overflow: hidden;
   overscroll-behavior: contain;
 }
 .rpp-calendar-schedule::-webkit-scrollbar { width: 3px; }
 .rpp-calendar-schedule::-webkit-scrollbar-thumb { background: #ddd8d2; border-radius: 2px; }
-.rpp-calendar-schedule .rpp-sch-wrap { height: auto; min-height: 100%; }
-.rpp-calendar-schedule .sch-items { flex: none; overflow: visible; min-height: 72px; }
+.rpp-calendar-schedule .rpp-sch-wrap { height: 100%; min-height: 0; }
+.rpp-calendar-schedule .sch-items {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 0;
+  overscroll-behavior: contain;
+}
 
 .cal-dt-display {
   padding: 10px 14px 8px;
