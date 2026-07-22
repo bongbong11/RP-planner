@@ -717,6 +717,14 @@ dialog.popup:has(.rpp-quick-schedule-picker) .popup-content {
 .active-sync-off { background: #ffd8d8 !important; border-color: #e07070 !important; color: #a03030 !important; }
 
 /* 주입 토글 버튼 */
+.rpp-inject-toggle {
+  width: auto !important;
+  min-width: 62px;
+  padding: 0 8px !important;
+  font-size: 0.72rem !important;
+  font-weight: 700;
+  white-space: nowrap;
+}
 .inject-on  { background: #d8f0e8 !important; border-color: #6abf9a !important; color: #2a6a4a !important; }
 .inject-off { background: #f0d8d8 !important; border-color: #d09090 !important; color: #803030 !important; }
 
