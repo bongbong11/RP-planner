@@ -162,6 +162,27 @@ dialog.popup:has(.rpp-quick-schedule-picker) .popup-content {
   padding-right: 34px;
 }
 
+/* 다중선택 체크 표시를 각 버튼 안에 고정 */
+dialog.popup:has(.rpp-quick-schedule-picker) .scrollable-buttons-container {
+  overflow-x: hidden;
+}
+dialog.popup:has(.rpp-quick-schedule-picker) .scrollable-buttons-container .menu_button.toggleable {
+  position: relative !important;
+  box-sizing: border-box;
+  width: 100%;
+  padding-left: 34px !important;
+  padding-right: 12px !important;
+}
+dialog.popup:has(.rpp-quick-schedule-picker) .scrollable-buttons-container .menu_button.toggleable::before {
+  position: absolute !important;
+  left: 10px !important;
+  top: 50% !important;
+  right: auto !important;
+  bottom: auto !important;
+  transform: translateY(-50%) !important;
+  margin: 0 !important;
+}
+
 /* ─── 콘텐츠 영역 ───────────────────────────────────────────── */
 #rpp-content {
   flex: 1;
