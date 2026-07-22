@@ -1,4 +1,4 @@
-// RP Planner v3.4.0 — SillyTavern Extension
+// RP Planner v3.4.1 — SillyTavern Extension
 
 import { event_types } from '../../../events.js';
 import { MacrosParser } from '../../../macros.js';
@@ -89,6 +89,7 @@ const CHAR_DEFAULTS = {
     backupSlots: [],
     currentDT:   null,
     processedMessageHashes: [],
+    injectionEnabled: true,
 };
 
 const GLOBAL_DEFAULTS = {
@@ -119,6 +120,7 @@ function CD() {
     const d=s.charData[k]??structuredClone(CHAR_DEFAULTS);
     if(!d.backupSlots) d.backupSlots=[];
     if(!Array.isArray(d.processedMessageHashes))d.processedMessageHashes=[];
+    if(d.injectionEnabled===undefined)d.injectionEnabled=true;
     chatCache.set(k,d);
     return d;
 }
@@ -646,6 +648,7 @@ function toggleDone(id)     { const d=CD();const x=d.schedules.find(x=>x.id===id
 
 // ─── Context 주입 ─────────────────────────────────────────────
 function buildScheduleText() {
+    if(CD().injectionEnabled===false)return '';
     const s=S(),d=CD(),cur=CD().currentDT,lines=[];
     const formatEntry=x=>{
         const date=[x.year,x.month,x.day].filter(v=>v!==null&&v!==undefined).join('/');
@@ -807,6 +810,7 @@ function getPanelHTML() {
     <button class="rpp-tab" data-tab="calendar" title="Calendar">📅</button>
     <button class="rpp-tab" data-tab="settings" title="Settings">⚙️</button>
     <div class="rpp-tab-spacer"></div>
+    <button id="rpp-inject-toggle" class="rpp-tab rpp-inject-toggle" title="RP 프롬프트 주입 켜기/끄기"></button>
     <button id="rpp-sync-btn" class="rpp-tab rpp-sync-icon" title="AI 스케쥴 파싱">⚡</button>
     <button id="rpp-close" class="rpp-tab rpp-close-tab">✕</button>
   </div>
@@ -829,7 +833,15 @@ function switchTab(tab,opts={}) {
 }
 
 function updateHeaderBtns() {
-    // Header state hook retained for compatibility.
+    const btn=document.getElementById('rpp-inject-toggle');
+    if(!btn)return;
+    const enabled=CD().injectionEnabled!==false;
+    btn.textContent=enabled?'주입 ON':'주입 OFF';
+    btn.classList.toggle('inject-on',enabled);
+    btn.classList.toggle('inject-off',!enabled);
+    btn.title=enabled
+        ?'현재 채팅의 일정이 RP 프롬프트에 주입됩니다. 눌러서 끄기'
+        :'현재 채팅의 일정은 저장되지만 RP 프롬프트에는 주입되지 않습니다. 눌러서 켜기';
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -1080,7 +1092,7 @@ function renderSettings() {
     const s=S();
     const profiles=getCtx().extensionSettings?.connectionManager?.profiles??[];
     const profileOpts=profiles.map(p=>`<option value="${esc(p.id)}" ${p.id===s.syncProfileId?'selected':''}>${esc(p.name)}</option>`).join('');
-    const previewText=buildInjectText()||'(empty)';
+    const previewText=buildInjectText()||(CD().injectionEnabled===false?'(주입 꺼짐 — 모델에 아무 내용도 보내지 않음)':'(empty)');
     const backupHTML=CD().backupSlots.length?CD().backupSlots.map(slot=>`
       <div class="backup-slot" data-id="${slot.id}">
         <div class="backup-slot-name" contenteditable="true" data-id="${slot.id}">${esc(slot.name)}</div>
@@ -1349,6 +1361,15 @@ function openPanel() {
     document.querySelectorAll('.rpp-tab[data-tab]').forEach(b=>{b.addEventListener('click',e=>{e.stopPropagation();switchTab(b.dataset.tab);});});
     document.getElementById('rpp-close')?.addEventListener('click',e=>{e.stopPropagation();closePanel();});
 
+    document.getElementById('rpp-inject-toggle')?.addEventListener('click',e=>{
+        e.stopPropagation();
+        const d=CD();
+        d.injectionEnabled=d.injectionEnabled===false;
+        save();injectContext();updateHeaderBtns();
+        if(activeTab==='settings')switchTab('settings');
+        toast(d.injectionEnabled?'RP 프롬프트 주입 켜짐':'RP 프롬프트 주입 꺼짐');
+    });
+
     // ⚡ = AI 스케쥴 파싱
     document.getElementById('rpp-sync-btn')?.addEventListener('click',async e=>{
         e.stopPropagation();
@@ -1578,7 +1599,7 @@ async function init() {
     if(!document.getElementById('rpp-ext-block'))registerSettingsUI();
     registerMacros();registerSlashCommands();installQuickReplyPopupEnhancements();injectContext();
     pruneOrphanedData();
-    console.log(LOG,'v3.4.0 loaded',storageAvailable?'(전용 폴더 저장)':'(settings.json 임시 저장)');
+    console.log(LOG,'v3.4.1 loaded',storageAvailable?'(전용 폴더 저장)':'(settings.json 임시 저장)');
     })();
     try{
         await initPromise;
