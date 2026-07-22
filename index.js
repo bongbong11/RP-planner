@@ -1,4 +1,4 @@
-// RP Planner v5 — SillyTavern Extension
+// RP Planner v3.4.0 — SillyTavern Extension
 
 import { event_types } from '../../../events.js';
 import { MacrosParser } from '../../../macros.js';
@@ -34,6 +34,10 @@ const QUICK_REPLY_SCRIPT=`/buttons labels=["1개월","3개월","6개월","12개�
 
 let ctx = null;
 let initPromise = null;
+const STORAGE_API='/api/plugins/rp-planner-storage';
+const chatCache=new Map();
+let storageAvailable=false;
+let storageSaveTimer=null;
 function getCtx() { if(!ctx) ctx=SillyTavern.getContext(); return ctx; }
 
 // ─── 채팅별 데이터 키 ────────────────────────────────────────
@@ -111,28 +115,77 @@ function S() {
 
 function CD() {
     const s=S(), k=charKey();
-    const pendingKey=chatKeyFromIdentity(`${getCurrentChatOwner()}|unsaved`);
-    if(k!==pendingKey&&!s.charData[k]&&s.charData[pendingKey]){
-        s.charData[k]=s.charData[pendingKey];
-        delete s.charData[pendingKey];
-        save();
-    }
-    // One-time migration: move the old character-wide record into the first chat
-    // that opens it. Moving (not copying) prevents it leaking into other chats.
-    const legacy=legacyCharKey();
-    if(!s.charData[k]&&s.charData[legacy]){
-        s.charData[k]=s.charData[legacy];
-        delete s.charData[legacy];
-        save();
-    }
-    if(!s.charData[k]) s.charData[k]=structuredClone(CHAR_DEFAULTS);
-    const d=s.charData[k];
+    if(chatCache.has(k))return chatCache.get(k);
+    const d=s.charData[k]??structuredClone(CHAR_DEFAULTS);
     if(!d.backupSlots) d.backupSlots=[];
     if(!Array.isArray(d.processedMessageHashes))d.processedMessageHashes=[];
+    chatCache.set(k,d);
     return d;
 }
 
-function save() { getCtx().saveSettingsDebounced(); }
+function isEmptyChatData(data) {
+    return !(data?.schedules?.length||data?.backupSlots?.length||data?.currentDT||data?.processedMessageHashes?.length);
+}
+
+async function storageRequest(pathname,options={}) {
+    const headers={...getCtx().getRequestHeaders(),...(options.headers||{})};
+    const response=await fetch(`${STORAGE_API}${pathname}`,{...options,headers});
+    if(!response.ok)throw new Error(`Storage API ${response.status}`);
+    return response.status===204?null:response.json();
+}
+
+async function loadCurrentChatData() {
+    const key=charKey(),s=S();
+    if(!storageAvailable){
+        const fallback=s.charData[key]??structuredClone(CHAR_DEFAULTS);
+        chatCache.set(key,fallback);
+        return;
+    }
+    const result=await storageRequest(`/chat/${encodeURIComponent(key)}`);
+    let data=result?.data??null;
+    const pendingKey=chatKeyFromIdentity(`${getCurrentChatOwner()}|unsaved`);
+    if(!data&&key!==pendingKey){
+        const pending=chatCache.get(pendingKey)??(await storageRequest(`/chat/${encodeURIComponent(pendingKey)}`))?.data;
+        if(pending&&!isEmptyChatData(pending)){
+            data=pending;
+            await persistChatData(key,data);
+            await storageRequest(`/chat/${encodeURIComponent(pendingKey)}`,{method:'DELETE'});
+            chatCache.delete(pendingKey);
+        }
+    }
+    const legacy=s.charData[key]??s.charData[pendingKey]??s.charData[legacyCharKey()];
+    if(!data&&legacy){
+        data=Object.assign(structuredClone(CHAR_DEFAULTS),legacy);
+        await persistChatData(key,data);
+        delete s.charData[key];delete s.charData[pendingKey];delete s.charData[legacyCharKey()];
+        getCtx().saveSettingsDebounced();
+    }
+    if(data){
+        delete s.charData[key];delete s.charData[pendingKey];delete s.charData[legacyCharKey()];
+        getCtx().saveSettingsDebounced();
+    }
+    chatCache.set(key,Object.assign(structuredClone(CHAR_DEFAULTS),data||{}));
+}
+
+async function persistChatData(key,data) {
+    if(!storageAvailable)return;
+    if(isEmptyChatData(data)){
+        await storageRequest(`/chat/${encodeURIComponent(key)}`,{method:'DELETE'});
+        return;
+    }
+    await storageRequest(`/chat/${encodeURIComponent(key)}`,{
+        method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({data})
+    });
+}
+
+function save() {
+    const key=charKey(),snapshot=JSON.parse(JSON.stringify(CD()));
+    if(!storageAvailable)S().charData[key]=snapshot;
+    getCtx().saveSettingsDebounced();
+    if(!storageAvailable)return;
+    clearTimeout(storageSaveTimer);
+    storageSaveTimer=setTimeout(()=>persistChatData(key,snapshot).catch(err=>console.error(LOG,'전용 저장 실패:',err)),150);
+}
 
 // ─── 고아 데이터 정리 ────────────────────────────────────────
 function pruneOrphanedData() {
@@ -723,6 +776,7 @@ function importFromFile(file) {
                     throw new Error('지원하지 않는 백업 파일입니다');
                 }
                 if(data.currentDT&&!s.charData[key].currentDT)s.charData[key].currentDT=data.currentDT;
+                chatCache.set(key,s.charData[key]);
                 sortAndAutoCheck();save();injectContext();resolve(true);
             }catch(err){reject(err);}
         };
@@ -734,6 +788,7 @@ function clearAllData() {
     // Delete the whole current-chat record. This also removes scan hashes and
     // internal backup slots, so deleted schedules cannot survive in a backup.
     delete s.charData[key];
+    chatCache.set(key,structuredClone(CHAR_DEFAULTS));
     schedViewDate=null;
     save();
     injectContext();
@@ -1328,14 +1383,20 @@ function closePanel() {
     panelOpen=false;
 }
 
-function onMessageReceived() {
+async function onMessageReceived() {
+    if(!chatCache.has(charKey())){
+        try{await loadCurrentChatData();}catch(err){console.error(LOG,'채팅 일정 불러오기 실패:',err);}
+    }
     const s=S();if(s.syncMode!=='auto')return;
     parseLastOnly();
     if(panelOpen&&activeTab==='calendar')switchTab('calendar');
 }
 
-function onCharacterChanged() {
-    schedViewDate=null;if(panelOpen)switchTab(activeTab);
+async function onCharacterChanged() {
+    schedViewDate=null;
+    try{await loadCurrentChatData();}
+    catch(err){console.error(LOG,'채팅 일정 불러오기 실패:',err);}
+    if(panelOpen)switchTab(activeTab);
 }
 
 function registerSettingsUI() {
@@ -1493,6 +1554,14 @@ async function init() {
     initPromise=(async()=>{
     ctx=SillyTavern.getContext();
     if(!ctx.extensionSettings[EXT])ctx.extensionSettings[EXT]=structuredClone(GLOBAL_DEFAULTS);
+    try{
+        await storageRequest('/health');
+        storageAvailable=true;
+        await loadCurrentChatData();
+    }catch(err){
+        storageAvailable=false;
+        console.warn(LOG,'서버 저장 플러그인이 없어 settings.json 저장을 임시 사용합니다.');
+    }
     const btnHTML=`<div id="rpp-toolbar-btn" class="rpp-toolbar-btn" title="RP Planner">
       <span>📆 스케줄러</span><span id="rpp-badge" style="display:none" class="rpp-badge-dot"></span>
     </div>`;
@@ -1509,7 +1578,7 @@ async function init() {
     if(!document.getElementById('rpp-ext-block'))registerSettingsUI();
     registerMacros();registerSlashCommands();installQuickReplyPopupEnhancements();injectContext();
     pruneOrphanedData();
-    console.log(LOG,'v3.3.3 loaded');
+    console.log(LOG,'v3.4.0 loaded',storageAvailable?'(전용 폴더 저장)':'(settings.json 임시 저장)');
     })();
     try{
         await initPromise;
