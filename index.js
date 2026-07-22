@@ -20,7 +20,7 @@ const QUICK_REPLY_SCRIPT=`/buttons labels=["1개월","3개월","6개월","12개�
 /preset {{var::op}} |
 /re-replace find=/\`\`\`[a-z]*/g replace="" {{var::plan}} | /var plan {{pipe}} |
 /split find=/[\\r\\n]+/ trim=on {{var::plan}} | /let lines {{pipe}} |
-/buttons multiple=on labels={{var::lines}} <b>📅 이 일정으로 등록할까요?</b><br>빼고 싶은 건 체크 해제하세요 |
+/buttons multiple=on labels={{var::lines}} <span class="rpp-quick-schedule-picker"><b>📅 이 일정으로 등록할까요?</b><br>빼고 싶은 건 체크 해제하세요</span> |
 /let picked {{pipe}} |
 /let n {:/len {{var::picked}}:}() |
 /if left={{var::n}} right=0 rule=eq {: /popup 등록 취소했어요! | /abort :} |
@@ -653,7 +653,6 @@ function getPanelHTML() {
     return `<div id="rpp-panel">
   <div id="rpp-tabs">
     <button class="rpp-tab" data-tab="calendar" title="Calendar">📅</button>
-    <button class="rpp-tab" data-tab="schedule" title="Schedule">🗓</button>
     <button class="rpp-tab" data-tab="settings" title="Settings">⚙️</button>
     <div class="rpp-tab-spacer"></div>
     <button id="rpp-sync-btn" class="rpp-tab rpp-sync-icon" title="AI 스케쥴 파싱">⚡</button>
@@ -671,8 +670,7 @@ function switchTab(tab,opts={}) {
     if(!c)return;
     if(opts.date)schedViewDate=opts.date;
     switch(tab){
-        case 'calendar':  c.innerHTML=renderCalendar();  bindCalendarEvents();  break;
-        case 'schedule':  c.innerHTML=renderSchedule();  bindScheduleEvents();  break;
+        case 'calendar':  c.innerHTML=renderCalendar();  bindCalendarEvents(); bindScheduleEvents(); break;
         case 'settings':  c.innerHTML=renderSettings();  bindSettingsEvents();  break;
     }
     updateHeaderBtns();
@@ -692,15 +690,11 @@ function renderCalendar() {
         calMonth=cur?.month??new Date().getMonth()+1;
     }
     const year=calYear,month=calMonth;
-    let dtDisplay='';
-    if(cur){
-        const dayName=fmtDayName(cur),time=fmtTime(cur),season=cur.season?` · ${cur.season}`:'';
-        dtDisplay=`<div class="cal-dt-display">
-          <div class="cal-dt-date">${fmtDate(cur)} <span class="cal-dt-day">${dayName}</span></div>
-          ${time?`<div class="cal-dt-time">${time}${season}</div>`:''}
-        </div>`;
-    } else {
-        dtDisplay=`<div class="cal-dt-display cal-dt-unset">No date synced — go to Settings</div>`;
+    // 일정 영역의 기본 선택 날짜는 현재 RP 날짜, 없으면 보고 있는 달의 1일이다.
+    if(!schedViewDate){
+        schedViewDate=cur
+            ? {year:cur.year??calYear,month:cur.month,day:cur.day}
+            : {year:calYear,month:calMonth,day:1};
     }
     const firstDay=new Date(year,month-1,1).getDay();
     const daysInMonth=new Date(year,month,0).getDate();
@@ -720,9 +714,10 @@ function renderCalendar() {
     for(let d=1;d<=daysInMonth;d++){
         const dow=(firstDay+d-1)%7;
         const isCur=cur&&cur.month===month&&cur.day===d&&(cur.year??year)===year;
+        const isSelected=schedViewDate&&schedViewDate.month===month&&schedViewDate.day===d&&(schedViewDate.year??year)===year;
         const sc=schedMap[d];
         let cls='cal-cell';
-        if(dow===0)cls+=' sun';if(dow===6)cls+=' sat';if(isCur)cls+=' cal-today';
+        if(dow===0)cls+=' sun';if(dow===6)cls+=' sat';if(isCur)cls+=' cal-today';if(isSelected)cls+=' cal-selected';
         let dots='';
         if(sc){if(sc.upcoming>0)dots+=`<span class="cal-dot dot-upcoming"></span>`;if(sc.done>0)dots+=`<span class="cal-dot dot-done"></span>`;}
         cells+=`<div class="${cls}" data-day="${d}" data-month="${month}"><span class="cal-num">${d}</span>${dots?`<div class="cal-dots">${dots}</div>`:''}</div>`;
@@ -732,8 +727,8 @@ function renderCalendar() {
     const yearOpts=[...Array(20)].map((_,i)=>{const y=(cur?.year??new Date().getFullYear())-5+i;return `<option value="${y}" ${y===year?'selected':''}>${y}</option>`;}).join('');
     const monthOpts=[...Array(12)].map((_,i)=>`<option value="${i+1}" ${i+1===month?'selected':''}>${String(i+1).padStart(2,'0')}</option>`).join('');
 
-    return `<div class="rpp-cal-wrap">
-  ${dtDisplay}
+    return `<div class="rpp-calendar-screen">
+  <div class="rpp-cal-wrap">
   <div class="cal-nav">
     <button class="rpp-btn rpp-btn-xs" id="cal-prev">‹</button>
     <div class="cal-nav-selects">
@@ -748,6 +743,8 @@ function renderCalendar() {
     <div class="cal-body">${cells}</div>
   </div>
   <div class="cal-legend"><span class="cal-dot dot-upcoming"></span><span>Upcoming</span><span class="cal-dot dot-done" style="margin-left:10px"></span><span>Done</span></div>
+  </div>
+  <div class="rpp-calendar-schedule">${renderSchedule()}</div>
 </div>`;
 }
 
@@ -761,9 +758,9 @@ function bindCalendarEvents() {
             e.stopPropagation();
             const day=+cell.dataset.day;
             const month=+cell.dataset.month;
-            const year=CD().currentDT?.year??calYear;
+            const year=calYear;
             schedViewDate={month,day,year};
-            switchTab('schedule');
+            switchTab('calendar');
         });
     });
 }
@@ -858,9 +855,9 @@ function renderAllList() {
     const d=CD(),s=S(),cur=CD().currentDT,dates=getScheduleDates();
     if(!dates.length)return '<div class="rpp-empty">No schedules</div>';
     return dates.map(dt=>{
-        const items=d.schedules.filter(x=>x.month===dt.month&&x.day===dt.day);
+        const items=d.schedules.filter(x=>x.month===dt.month&&x.day===dt.day&&(x.year??0)===(dt.year??0));
         return `<div class="all-date-group">
-          <div class="all-date-label" data-month="${dt.month}" data-day="${dt.day}">${dt.month}/${dt.day} ${fmtDayName(dt)}</div>
+          <div class="all-date-label" data-year="${dt.year??''}" data-month="${dt.month}" data-day="${dt.day}">${dt.month}/${dt.day} ${fmtDayName(dt)}</div>
           ${items.map(x=>`<div class="all-item ${x.done?'done':''}" data-id="${x.id}">
             <span class="all-item-dot ${x.done?'dot-done':'dot-upcoming'}"></span>
             <span class="all-item-title">${esc(x.title)}</span>
@@ -873,18 +870,18 @@ function bindScheduleEvents() {
     const dates=getScheduleDates(),sv=schedViewDate;
     document.getElementById('sch-prev-date')?.addEventListener('click',e=>{
         e.stopPropagation();if(!sv)return;
-        const idx=dates.findIndex(x=>x.month===sv.month&&x.day===sv.day);
-        if(idx>0){schedViewDate=dates[idx-1];switchTab('schedule');}
+        const idx=dates.findIndex(x=>x.month===sv.month&&x.day===sv.day&&(x.year??0)===(sv.year??0));
+        if(idx>0){schedViewDate=dates[idx-1];switchTab('calendar');}
     });
     document.getElementById('sch-next-date')?.addEventListener('click',e=>{
         e.stopPropagation();if(!sv)return;
-        const idx=dates.findIndex(x=>x.month===sv.month&&x.day===sv.day);
-        if(idx<dates.length-1){schedViewDate=dates[idx+1];switchTab('schedule');}
+        const idx=dates.findIndex(x=>x.month===sv.month&&x.day===sv.day&&(x.year??0)===(sv.year??0));
+        if(idx<dates.length-1){schedViewDate=dates[idx+1];switchTab('calendar');}
     });
     document.getElementById('sch-all-btn')?.addEventListener('click',e=>{e.stopPropagation();const w=document.getElementById('sch-all-wrap');if(w)w.style.display='block';});
     document.getElementById('sch-all-close')?.addEventListener('click',e=>{e.stopPropagation();const w=document.getElementById('sch-all-wrap');if(w)w.style.display='none';});
     document.querySelectorAll('.all-date-label').forEach(el=>{
-        el.addEventListener('click',e=>{e.stopPropagation();schedViewDate={month:+el.dataset.month,day:+el.dataset.day};document.getElementById('sch-all-wrap').style.display='none';switchTab('schedule');});
+        el.addEventListener('click',e=>{e.stopPropagation();schedViewDate={year:+el.dataset.year||null,month:+el.dataset.month,day:+el.dataset.day};document.getElementById('sch-all-wrap').style.display='none';switchTab('calendar');});
     });
     document.getElementById('sch-file-input')?.addEventListener('change',async e=>{
         e.stopPropagation();const file=e.target.files[0];if(!file)return;
@@ -892,7 +889,7 @@ function bindScheduleEvents() {
         if(status){status.style.display='block';status.textContent='불러오는 중...';}
         try{
             const added=await importScheduleFile(file);
-            switchTab('schedule');
+            switchTab('calendar');
             if(window.toastr)window.toastr.success(`${added}개 일정을 등록했습니다`,'RP Planner');
             else toast(`${added}개 일정 등록됨`);
         }catch(err){toast('파일 불러오기 실패: '+err.message,true);}
@@ -908,14 +905,14 @@ function doAddSchedule() {
     if(!t){toast('Enter a title',true);return;}
     const sv=schedViewDate;
     if(!sv){toast('Select a date first',true);return;}
-    addSchedule({month:sv.month,day:sv.day,title:t,note:n,source:'manual'});
+    addSchedule({year:sv.year,month:sv.month,day:sv.day,title:t,note:n,source:'manual'});
     document.getElementById('sa-t').value='';document.getElementById('sa-n').value='';
-    switchTab('schedule');toast('Schedule added');
+    switchTab('calendar');toast('Schedule added');
 }
 
 function bindSchItemEvents() {
-    document.querySelectorAll('.sch-cb').forEach(cb=>{cb.addEventListener('change',e=>{e.stopPropagation();toggleDone(cb.dataset.id);switchTab('schedule');});});
-    document.querySelectorAll('.sch-del-btn').forEach(b=>{b.addEventListener('click',e=>{e.stopPropagation();removeSchedule(b.dataset.id);switchTab('schedule');});});
+    document.querySelectorAll('.sch-cb').forEach(cb=>{cb.addEventListener('change',e=>{e.stopPropagation();toggleDone(cb.dataset.id);switchTab('calendar');});});
+    document.querySelectorAll('.sch-del-btn').forEach(b=>{b.addEventListener('click',e=>{e.stopPropagation();removeSchedule(b.dataset.id);switchTab('calendar');});});
     document.querySelectorAll('.sch-edit-btn').forEach(b=>{b.addEventListener('click',e=>{e.stopPropagation();openSchEdit(b.dataset.id);});});
 }
 
@@ -940,7 +937,7 @@ function openSchEdit(id) {
         if(!t){toast('Title required',true);return;}
         const item=CD().schedules.find(x=>x.id===id);
         if(item){item.title=t;item.note=n;}
-        sortAndAutoCheck();save();injectContext();form.remove();switchTab('schedule');toast('Updated');
+        sortAndAutoCheck();save();injectContext();form.remove();switchTab('calendar');toast('Updated');
     });
 }
 
@@ -1170,10 +1167,7 @@ async function doSync(showAlert=false) {
     if(showAlert){if(window.toastr)window.toastr.success(msg,'RP Planner');else alert(msg);}
     else toast(msg);
 
-    if(panelOpen){
-        if(activeTab==='calendar')switchTab('calendar');
-        else if(activeTab==='schedule')switchTab('schedule');
-    }
+    if(panelOpen&&activeTab==='calendar')switchTab('calendar');
     const badge=document.getElementById('rpp-badge');
     if(badge&&totalAdded)badge.style.display='flex';
 }
@@ -1234,7 +1228,7 @@ function closePanel() {
 function onMessageReceived() {
     const s=S();if(s.syncMode!=='auto')return;
     parseLastOnly();
-    if(panelOpen){if(activeTab==='calendar')switchTab('calendar');else if(activeTab==='schedule')switchTab('schedule');}
+    if(panelOpen&&activeTab==='calendar')switchTab('calendar');
 }
 
 function onCharacterChanged() {
@@ -1311,10 +1305,7 @@ function importCalendarLine(value) {
     }
 
     const added=applyParsedSchedules([{year,month,day,title,note:''}]);
-    if(panelOpen){
-        if(activeTab==='calendar')switchTab('calendar');
-        else if(activeTab==='schedule')switchTab('schedule');
-    }
+    if(panelOpen&&activeTab==='calendar')switchTab('calendar');
     return String(added);
 }
 
@@ -1370,6 +1361,30 @@ function waitForToolbar(timeoutMs=10000) {
     });
 }
 
+function installQuickReplyPopupEnhancements() {
+    if(document.documentElement.dataset.rppQuickReplyObserver==='on')return;
+    document.documentElement.dataset.rppQuickReplyObserver='on';
+
+    const selectAll=popup=>{
+        if(!popup||popup.dataset.rppAutoSelected==='on')return;
+        if(!popup.querySelector('.rpp-quick-schedule-picker'))return;
+        popup.dataset.rppAutoSelected='on';
+        popup.querySelectorAll('.scrollable-buttons-container .menu_button.toggleable:not(.toggled)')
+            .forEach(button=>button.click());
+    };
+
+    document.querySelectorAll('dialog.popup').forEach(selectAll);
+    new MutationObserver(mutations=>{
+        for(const mutation of mutations){
+            for(const node of mutation.addedNodes){
+                if(!(node instanceof Element))continue;
+                if(node.matches?.('dialog.popup'))selectAll(node);
+                node.querySelectorAll?.('dialog.popup').forEach(selectAll);
+            }
+        }
+    }).observe(document.body,{childList:true,subtree:true});
+}
+
 async function init() {
     if(initPromise)return initPromise;
     initPromise=(async()=>{
@@ -1389,9 +1404,9 @@ async function init() {
     ctx.eventSource.on(event_types.CHAT_CHANGED,onCharacterChanged);
     ctx.eventSource.on(event_types.CHARACTER_EDITED,onCharacterChanged);
     if(!document.getElementById('rpp-ext-block'))registerSettingsUI();
-    registerMacros();registerSlashCommands();injectContext();
+    registerMacros();registerSlashCommands();installQuickReplyPopupEnhancements();injectContext();
     pruneOrphanedData();
-    console.log(LOG,'v3.2.1 loaded');
+    console.log(LOG,'v3.3.0 loaded');
     })();
     try{
         await initPromise;
