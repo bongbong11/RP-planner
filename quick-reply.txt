@@ -1,0 +1,24 @@
+/buttons labels=["1개월","3개월","6개월","12개월"] <b>📅 일정 생성</b><br>얼마 동안의 일정을 만들까요? |
+/let span {{pipe}} |
+/if left={{var::span}} right="" rule=eq {: /abort :} |
+/cal-future | /let busy {{pipe}} |
+/if left={{var::busy}} right="" rule=eq {: /popup 현재 RP 날짜를 먼저 설정해주세요! | /abort :} |
+/echo severity=info timeout=60000 📅 {{var::span}}치 일정 짜는 중… |
+/let op {:/preset:}() |
+/preset 속마음용 |
+/gen lock=on [OOC: Out-of-character task. Do NOT roleplay or write any prose. Context JSON — 'today' is the CURRENT in-story date, 'booked' lists dates that already have events: {{var::busy}} Starting from the day AFTER 'today', create {{var::span}} worth of upcoming schedule entries for {{char}}, fitting the story's setting and {{char}}'s life. Rules: every entry MUST fall within {{var::span}} counted forward from 'today' — never before 'today', never beyond that window; never place an entry on a date listed in 'booked'; spread entries out naturally; do not put two entries on the same date. CRITICAL — only things that can genuinely be PLANNED IN ADVANCE: appointments, deadlines, exams, trips, meetings, performances, anniversaries, reservations, scheduled work shifts, classes, checkups. NEVER invent unforeseeable events (illness, accidents, someone catching a cold, sudden fights, weather, chance encounters) or anything that depends on how the story unfolds. A calendar holds commitments, not plot predictions. Output ONE entry per line in EXACTLY this format, nothing else: M/D : 제목 No numbering, no bullets, no markdown fence, no commentary. Titles in KOREAN.] |
+/let plan {{pipe}} |
+/preset {{var::op}} |
+/re-replace find=/```[a-z]*/g replace="" {{var::plan}} | /var plan {{pipe}} |
+/split find=/[\r\n]+/ trim=on {{var::plan}} | /let lines {{pipe}} |
+/buttons multiple=on labels={{var::lines}} <b>📅 이 일정으로 등록할까요?</b><br>빼고 싶은 건 체크 해제하세요 |
+/let picked {{pipe}} |
+/let n {:/len {{var::picked}}:}() |
+/if left={{var::n}} right=0 rule=eq {: /popup 등록 취소했어요! | /abort :} |
+/let added 0 |
+/let c 0 |
+/foreach {{var::picked}} {:
+    /cal-import {{var::item}} | /var c {{pipe}} |
+    /var added {:/add {{var::added}} {{var::c}}:}() |
+:} |
+/popup wide=on large=on scroll=on <b>📅 일정 등록 완료</b><br><br><b>{{var::added}}</b>개 등록됨 ({{var::span}})
