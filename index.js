@@ -551,19 +551,37 @@ function toggleDone(id)     { const d=CD();const x=d.schedules.find(x=>x.id===id
 // ─── Context 주입 ─────────────────────────────────────────────
 function buildScheduleText() {
     const s=S(),d=CD(),cur=CD().currentDT,lines=[];
+    const formatEntry=x=>{
+        const date=[x.year,x.month,x.day].filter(v=>v!==null&&v!==undefined).join('/');
+        const day=fmtDayName({year:x.year,month:x.month,day:x.day});
+        const note=x.note?` | Note: ${x.note}`:'';
+        return `- ${date}${day?` (${day})`:''} | ${x.title}${note}`;
+    };
+
+    lines.push('<RP_PLANNER_CONTEXT>');
     if(cur){
         const dt=fmtDate(cur),t=fmtTime(cur);
         const day=fmtDayName(cur);
         const season=cur.season?` | Season: ${cur.season}`:'';
-        lines.push(`[RP Current Date: ${dt} ${day}${t?` | Time: ${t}`:''}${season}]`);
+        lines.push(`<CURRENT_IN_STORY_TIME>${dt} ${day}${t?` | ${t}`:''}${season}</CURRENT_IN_STORY_TIME>`);
+    } else {
+        lines.push('<CURRENT_IN_STORY_TIME>Unknown</CURRENT_IN_STORY_TIME>');
     }
-    const upcoming=d.schedules.filter(x=>!x.done&&(!cur||!isPast(x,cur))).slice(0,s.maxUpcoming??20);
+
+    const active=d.schedules.filter(x=>!x.done&&(!cur||!isPast(x,cur))).slice(0,s.maxUpcoming??20);
+    const today=cur?active.filter(x=>isToday(x,cur)):[];
+    const upcoming=cur?active.filter(x=>!isToday(x,cur)):active;
+    lines.push('<TODAY_COMMITMENTS>');
+    if(today.length)today.forEach(x=>lines.push(formatEntry(x)));
+    else lines.push('None');
+    lines.push('</TODAY_COMMITMENTS>');
+
+    lines.push('<UPCOMING_COMMITMENTS>');
     if(upcoming.length){
-        lines.push('[RP Upcoming Schedule:');
         const groups=[];
         for(const x of upcoming){
             const last=groups[groups.length-1];
-            if(last&&last.title===x.title&&last.note===(x.note||'')&&last.month===x.month&&x.day===last.endDay+1){
+            if(last&&last.title===x.title&&last.note===(x.note||'')&&last.year===x.year&&last.month===x.month&&x.day===last.endDay+1){
                 last.endDay=x.day;
             } else {
                 groups.push({month:x.month,day:x.day,endDay:x.day,title:x.title,note:x.note||'',year:x.year});
@@ -572,20 +590,33 @@ function buildScheduleText() {
         groups.forEach(g=>{
             const startDay=fmtDayName({year:g.year,month:g.month,day:g.day});
             const endDay=fmtDayName({year:g.year,month:g.month,day:g.endDay});
+            const year=g.year?`${g.year}/`:'';
             const dateStr=g.day===g.endDay
-                ?`${g.month}/${g.day}(${startDay})`
-                :`${g.month}/${g.day}(${startDay})~${g.endDay}(${endDay})`;
-            const note=g.note?` (${g.note})`:'';
-            lines.push(`  - ${dateStr}: ${g.title}${note}`);
+                ?`${year}${g.month}/${g.day} (${startDay})`
+                :`${year}${g.month}/${g.day} (${startDay})–${g.month}/${g.endDay} (${endDay})`;
+            const note=g.note?` | Note: ${g.note}`:'';
+            lines.push(`- ${dateStr} | ${g.title}${note}`);
         });
-        lines.push(']');
-    }
+    } else lines.push('None');
+    lines.push('</UPCOMING_COMMITMENTS>');
+
     const past=d.schedules.filter(x=>x.done||(cur&&isPast(x,cur))).slice(-(s.maxPast??10));
+    lines.push('<COMPLETED_EVENTS>');
     if(past.length){
-        lines.push('[RP Past Events (already occurred — do not repeat or initiate again):');
-        past.forEach(x=>{const note=x.note?` (${x.note})`:'';lines.push(`  - ${x.month}/${x.day}: ${x.title}${note} — completed`);});
-        lines.push(']');
-    }
+        past.forEach(x=>lines.push(formatEntry(x)));
+    } else lines.push('None');
+    lines.push('</COMPLETED_EVENTS>');
+
+    lines.push(`<RP_PLANNER_USAGE>
+- Treat the current in-story time as the canonical temporal reference for this response.
+- Treat listed commitments as established calendar facts known only to characters who would reasonably know them.
+- Reflect a relevant commitment naturally through awareness, preparation, timing, priorities, reminders, dialogue, action, or consequences when the live scene calls for it.
+- Keep unrelated or distant commitments implicit. Do not force calendar exposition, mention every entry, or steer the scene toward an entry merely because it is listed.
+- A future commitment is a current plan, not a guaranteed outcome. Do not jump time, begin it early, complete it, or decide its result unless the roleplay reaches that point.
+- Completed events are past continuity. Do not schedule, initiate, or replay them as upcoming events.
+- Do not invent, alter, cancel, or reschedule entries. Do not use an entry as permission to write unprovided {{user}} actions, dialogue, feelings, decisions, or consent.
+</RP_PLANNER_USAGE>`);
+    lines.push('</RP_PLANNER_CONTEXT>');
     return lines.join('\n');
 }
 
@@ -832,18 +863,6 @@ function renderSchedule() {
       <input id="sa-n" type="text" class="rpp-inp" placeholder="Note (optional)" style="flex:1">
     </div>
   </div>
-  <div class="sch-import-section">
-    <div class="sch-import-title">📥 일정 불러오기</div>
-    <div class="sch-import-btns">
-      <label class="rpp-btn rpp-btn-xs sch-import-file-btn">📄 파일 불러오기<input type="file" id="sch-file-input" accept=".txt,.json" style="display:none"></label>
-    </div>
-    <div class="sch-import-hint">
-      txt: <code>2027/5/2 : Rookie minicamp / Pittsburgh facility</code><br>
-      범위: <code>2027/5/2-4 : Rookie minicamp</code><br>
-      json: <code>[{"year":2027,"month":5,"day":2,"title":"제목","note":"노트"}]</code>
-    </div>
-    <div id="sch-scan-status" class="sch-scan-status" style="display:none"></div>
-  </div>
   <div id="sch-all-wrap" class="sch-all-wrap" style="display:none">
     <div class="sch-all-header">All Schedules <button class="rpp-btn rpp-btn-xs" id="sch-all-close">✕</button></div>
     <div id="sch-all-list">${renderAllList()}</div>
@@ -882,17 +901,6 @@ function bindScheduleEvents() {
     document.getElementById('sch-all-close')?.addEventListener('click',e=>{e.stopPropagation();const w=document.getElementById('sch-all-wrap');if(w)w.style.display='none';});
     document.querySelectorAll('.all-date-label').forEach(el=>{
         el.addEventListener('click',e=>{e.stopPropagation();schedViewDate={year:+el.dataset.year||null,month:+el.dataset.month,day:+el.dataset.day};document.getElementById('sch-all-wrap').style.display='none';switchTab('calendar');});
-    });
-    document.getElementById('sch-file-input')?.addEventListener('change',async e=>{
-        e.stopPropagation();const file=e.target.files[0];if(!file)return;
-        const status=document.getElementById('sch-scan-status');
-        if(status){status.style.display='block';status.textContent='불러오는 중...';}
-        try{
-            const added=await importScheduleFile(file);
-            switchTab('calendar');
-            if(window.toastr)window.toastr.success(`${added}개 일정을 등록했습니다`,'RP Planner');
-            else toast(`${added}개 일정 등록됨`);
-        }catch(err){toast('파일 불러오기 실패: '+err.message,true);}
     });
     document.getElementById('sch-add-btn')?.addEventListener('click',e=>{e.stopPropagation();doAddSchedule();});
     document.getElementById('sa-t')?.addEventListener('keydown',e=>{if(e.key==='Enter'){e.stopPropagation();doAddSchedule();}});
@@ -1001,6 +1009,18 @@ function renderSettings() {
     <div class="rpp-es-row" style="margin-top:6px"><span class="rpp-es-label">지난 최대</span><input type="number" id="rpp-max-past" class="rpp-es-num" value="${s.maxPast}" min="1" max="100"><span class="rpp-es-hint">개</span></div>
   </div>
   <div class="rpp-es-section">
+    <div class="rpp-es-title">📥 일정 불러오기</div>
+    <div class="sch-import-btns">
+      <label class="rpp-btn rpp-btn-xs sch-import-file-btn">📄 파일 불러오기<input type="file" id="sch-file-input" accept=".txt,.json" style="display:none"></label>
+    </div>
+    <div class="sch-import-hint">
+      txt: <code>2027/5/2 : Rookie minicamp / Pittsburgh facility</code><br>
+      범위: <code>2027/5/2-4 : Rookie minicamp</code><br>
+      json: <code>[{"year":2027,"month":5,"day":2,"title":"제목","note":"노트"}]</code>
+    </div>
+    <div id="sch-scan-status" class="sch-scan-status" style="display:none"></div>
+  </div>
+  <div class="rpp-es-section">
     <div class="rpp-es-title">🔗 연결 프로필 (AI 파싱용)</div>
     <select id="rpp-es-profile" class="rpp-es-select" style="width:100%;max-width:100%;box-sizing:border-box"><option value="">선택 안 함</option>${profileOpts}</select>
     <div class="rpp-es-row" style="margin-top:8px">
@@ -1077,6 +1097,20 @@ function bindSettingsEvents() {
     });
     document.getElementById('rpp-max-upcoming')?.addEventListener('change',e=>{e.stopPropagation();s.maxUpcoming=parseInt(e.target.value)||20;save();injectContext();});
     document.getElementById('rpp-max-past')?.addEventListener('change',e=>{e.stopPropagation();s.maxPast=parseInt(e.target.value)||10;save();injectContext();});
+    document.getElementById('sch-file-input')?.addEventListener('change',async e=>{
+        e.stopPropagation();const file=e.target.files[0];if(!file)return;
+        const status=document.getElementById('sch-scan-status');
+        if(status){status.style.display='block';status.textContent='불러오는 중...';}
+        try{
+            const added=await importScheduleFile(file);
+            switchTab('settings');
+            if(window.toastr)window.toastr.success(`${added}개 일정을 등록했습니다`,'RP Planner');
+            else toast(`${added}개 일정 등록됨`);
+        }catch(err){
+            if(status){status.style.display='block';status.textContent='불러오기에 실패했습니다';}
+            toast('파일 불러오기 실패: '+err.message,true);
+        }
+    });
     document.getElementById('rpp-es-profile')?.addEventListener('change',e=>{e.stopPropagation();s.syncProfileId=e.target.value||null;save();});
     document.getElementById('rpp-reset-scan-history')?.addEventListener('click',e=>{
         e.stopPropagation();
@@ -1337,8 +1371,8 @@ function registerMacros() {
     try{
         MacrosParser.registerMacro('스케쥴', ()=>buildScheduleText());
         MacrosParser.registerMacro('schedule', ()=>buildScheduleText());
-        MacrosParser.registerMacro('플래너', ()=>`<플래너>\n${buildScheduleText()}\n</플래너>`);
-        MacrosParser.registerMacro('planner', ()=>`<planner>\n${buildScheduleText()}\n</planner>`);
+        MacrosParser.registerMacro('플래너', ()=>buildScheduleText());
+        MacrosParser.registerMacro('planner', ()=>buildScheduleText());
     }catch(err){
         console.error(LOG,'매크로 등록 실패:',err);
     }
@@ -1406,7 +1440,7 @@ async function init() {
     if(!document.getElementById('rpp-ext-block'))registerSettingsUI();
     registerMacros();registerSlashCommands();installQuickReplyPopupEnhancements();injectContext();
     pruneOrphanedData();
-    console.log(LOG,'v3.3.0 loaded');
+    console.log(LOG,'v3.3.1 loaded');
     })();
     try{
         await initPromise;
