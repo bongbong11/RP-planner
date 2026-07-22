@@ -609,9 +609,9 @@ function buildScheduleText() {
 
     lines.push(`<RP_PLANNER_USAGE>
 - Treat the current in-story time as the canonical temporal reference for this response.
-- Treat listed commitments as established calendar facts known only to characters who would reasonably know them.
-- Reflect a relevant commitment naturally through awareness, preparation, timing, priorities, reminders, dialogue, action, or consequences when the live scene calls for it.
-- Keep unrelated or distant commitments implicit. Do not force calendar exposition, mention every entry, or steer the scene toward an entry merely because it is listed.
+- Treat listed commitments as the character's established schedule, known only to characters who would reasonably know it. Use it as material for temporal continuity and character behaviour, not as a checklist of events that must all be shown.
+- When a commitment is relevant to the live scene or current time, let it naturally inform awareness, preparation, timing, priorities, reminders, dialogue, action, or consequences.
+- Keep unrelated or distant commitments implicit. Do not force calendar exposition, mention every entry, steer the scene toward an entry, or make an event occur merely because it appears here.
 - A future commitment is a current plan, not a guaranteed outcome. Do not jump time, begin it early, complete it, or decide its result unless the roleplay reaches that point.
 - Completed events are past continuity. Do not schedule, initiate, or replay them as upcoming events.
 - Do not invent, alter, cancel, or reschedule entries. Do not use an entry as permission to write unprovided {{user}} actions, dialogue, feelings, decisions, or consent.
@@ -877,10 +877,13 @@ function renderAllList() {
         const items=d.schedules.filter(x=>x.month===dt.month&&x.day===dt.day&&(x.year??0)===(dt.year??0));
         return `<div class="all-date-group">
           <div class="all-date-label" data-year="${dt.year??''}" data-month="${dt.month}" data-day="${dt.day}">${dt.month}/${dt.day} ${fmtDayName(dt)}</div>
-          ${items.map(x=>`<div class="all-item ${x.done?'done':''}" data-id="${x.id}">
-            <span class="all-item-dot ${x.done?'dot-done':'dot-upcoming'}"></span>
+          ${items.map(x=>{
+              const completed=x.done||isPast(x,cur);
+              return `<div class="all-item ${completed?'done':''}" data-id="${x.id}">
+            <span class="all-item-dot ${completed?'dot-done':'dot-upcoming'}"></span>
             <span class="all-item-title">${esc(x.title)}</span>
-          </div>`).join('')}
+          </div>`;
+          }).join('')}
         </div>`;
     }).join('');
 }
@@ -1440,7 +1443,7 @@ async function init() {
     if(!document.getElementById('rpp-ext-block'))registerSettingsUI();
     registerMacros();registerSlashCommands();installQuickReplyPopupEnhancements();injectContext();
     pruneOrphanedData();
-    console.log(LOG,'v3.3.1 loaded');
+    console.log(LOG,'v3.3.2 loaded');
     })();
     try{
         await initPromise;
